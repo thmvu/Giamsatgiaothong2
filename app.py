@@ -106,38 +106,47 @@ if uploaded_file is not None:
     # BƯỚC 1: ĐẶT STOP LINE bằng click 2 điểm trên ảnh
     # ==========================================================
 
-    # Session state lưu 2 điểm click
+    # Session state lưu trạng thái (persist qua mọi rerun)
     if "stop_pts" not in st.session_state:
         st.session_state.stop_pts = []
+    if "last_click_key" not in st.session_state:
+        st.session_state.last_click_key = None
+    if "first_frame" not in st.session_state:
+        # Đọc frame đầu tiên và lưu vào session_state
+        # Chỉ đọc 1 lần duy nhất, tránh mỗi rerun lại consume frame mới
+        ret_first, frame0 = cap.read()
+        st.session_state.first_frame = frame0 if ret_first else None
 
-    # Khởi tạo stop_line_pts trước (tránh lỗi khi check_redlight=False)
-    stop_line_pts = None  # ((x1,y1), (x2,y2)) tọa độ video gốc
+    # Khởi tạo stop_line_pts (tránh lỗi khi check_redlight=False)
+    stop_line_pts = None
 
     if check_redlight:
         st.subheader("📍 Bước 1: Vẽ vạch dừng")
         st.markdown(
-            "**Click 2 điểm** trên ảnh để xác định vạch dừng.  "
-            "Điểm 1 → Điểm 2 sẽ được nối thành đường vạch.  "
-            "Nhấn **Reset** nếu muốn chọn lại."
+            "🖱️ **Click 2 điểm** trên ảnh để xác định vạch dừng.  "
+            "Điểm 1 → Điểm 2 sẽ nối thành đường.  "
+            "Nhấn **Chọn lại** nếu chọn nhầm."
         )
 
-        ret_first, first_frame = cap.read()
-        if ret_first:
-            # --- Scale ảnh hiển thị (giữ tỷ lệ, max 800px) ---
+        first_frame = st.session_state.first_frame
+        if first_frame is not None:
+            # Scale ảnh hiển thị (giữ tỷ lệ, max 800px)
             DISPLAY_W = 800
             scale = DISPLAY_W / vid_w
             display_h = int(vid_h * scale)
 
-            # Vẽ preview (với điểm đã click)
+            # Vẽ preview trên first_frame
             preview = first_frame.copy()
             pts = st.session_state.stop_pts
 
-            # Vẽ các điểm đã click lên ảnh gốc (trước khi scale)
+            # Vẽ các điểm đã chọn
             for idx, p in enumerate(pts):
                 px, py = p["x"], p["y"]
-                cv2.circle(preview, (px, py), 8, (0, 255, 255), -1)
-                cv2.putText(preview, f"P{idx+1}", (px + 10, py - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                cv2.circle(preview, (px, py), 10, (0, 255, 255), -1)
+                cv2.circle(preview, (px, py), 12, (0, 0, 0), 2)  # viền đen
+                cv2.putText(preview, f"P{idx+1}",
+                            (px + 14, py - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
             if len(pts) == 2:
                 p1 = (pts[0]["x"], pts[0]["y"])
@@ -145,63 +154,58 @@ if uploaded_file is not None:
                 stop_line_pts = (p1, p2)
 
                 # Vẽ đường stop line
-                cv2.line(preview, p1, p2, (255, 0, 255), 3)
+                cv2.line(preview, p1, p2, (255, 0, 255), 4)
                 cv2.putText(preview, "STOP LINE",
-                            (min(p1[0], p2[0]), min(p1[1], p2[1]) - 12),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+                            (min(p1[0], p2[0]), min(p1[1], p2[1]) - 14),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
 
-                # Overlay vùng vi phạm phía dưới stop line
+                # Overlay mờ vùng phía dưới stop line
                 avg_y = (p1[1] + p2[1]) // 2
                 overlay = preview.copy()
-                cv2.rectangle(overlay, (0, avg_y), (vid_w, vid_h), (0, 0, 255), -1)
+                cv2.rectangle(overlay, (0, avg_y), (vid_w, vid_h), (0, 0, 200), -1)
                 preview = cv2.addWeighted(overlay, 0.12, preview, 0.88, 0)
-                cv2.putText(preview, "VUNG VI PHAM",
-                            (vid_w // 2 - 100, avg_y + 40),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 80, 255), 2)
+                cv2.putText(preview, "VUNG VI PHAM (den do)",
+                            (vid_w // 2 - 150, avg_y + 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-            # Scale ảnh preview xuống để hiển thị
+            # Scale ảnh để hiển thị
             preview_resized = cv2.resize(preview, (DISPLAY_W, display_h))
             preview_pil = Image.fromarray(cv2.cvtColor(preview_resized, cv2.COLOR_BGR2RGB))
 
-            # --- Hiển thị ảnh clickable ---
-            n_pts = len(st.session_state.stop_pts)
-            if n_pts < 2:
-                st.info(f"🖱️ Click điểm **{n_pts + 1}/2** trên ảnh bên dưới")
+            # Trạng thái hướng dẫn
+            n_pts = len(pts)
+            if n_pts == 0:
+                st.info("🖱️ Click điểm **1/2** trên ảnh (góc trái vạch dừng)")
+            elif n_pts == 1:
+                st.info("🖱️ Click điểm **2/2** trên ảnh (góc phải vạch dừng)")
             else:
-                st.success("✅ Đã chọn đủ 2 điểm! Vạch dừng đã được xác định.")
+                st.success("✅ Đã chọn xong! Có thể bắt đầu quét video.")
+                p1d, p2d = pts[0], pts[1]
+                st.caption(f"Điểm 1: ({p1d['x']}, {p1d['y']})  |  Điểm 2: ({p2d['x']}, {p2d['y']})")
 
-            clicked = streamlit_image_coordinates(
-                preview_pil,
-                key="stop_line_click"
-            )
+            # Ảnh clickable
+            clicked = streamlit_image_coordinates(preview_pil, key="stop_line_click")
 
-            # Xử lý click mới
+            # Xử lý click mới — tránh duplicate bằng cách kiểm tra key
             if clicked is not None:
-                # Scale ngược tọa độ về kích thước video gốc
-                real_x = int(clicked["x"] / scale)
-                real_y = int(clicked["y"] / scale)
-                real_x = max(0, min(real_x, vid_w - 1))
-                real_y = max(0, min(real_y, vid_h - 1))
-
-                # Chỉ thêm nếu chưa đủ 2 điểm
-                if len(st.session_state.stop_pts) < 2:
+                click_key = (clicked["x"], clicked["y"])
+                if (click_key != st.session_state.last_click_key
+                        and len(st.session_state.stop_pts) < 2):
+                    st.session_state.last_click_key = click_key
+                    real_x = max(0, min(int(clicked["x"] / scale), vid_w - 1))
+                    real_y = max(0, min(int(clicked["y"] / scale), vid_h - 1))
                     st.session_state.stop_pts.append({"x": real_x, "y": real_y})
                     st.rerun()
 
             # Nút reset
-            if st.button("🔄 Chọn lại vạch dừng", key="reset_pts"):
-                st.session_state.stop_pts = []
-                st.rerun()
+            col_res1, col_res2 = st.columns([1, 3])
+            with col_res1:
+                if st.button("🔄 Chọn lại", key="reset_pts"):
+                    st.session_state.stop_pts = []
+                    st.session_state.last_click_key = None
+                    st.rerun()
 
-            # Thông tin điểm đã chọn
-            if len(st.session_state.stop_pts) == 2:
-                p1, p2 = st.session_state.stop_pts
-                st.caption(
-                    f"Điểm 1: ({p1['x']}, {p1['y']})  →  "
-                    f"Điểm 2: ({p2['x']}, {p2['y']})"
-                )
-
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     # ==========================================================
     # BƯỚC 2: QUÉT VIDEO

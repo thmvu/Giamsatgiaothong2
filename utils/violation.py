@@ -1,99 +1,71 @@
 """
 Violation Detection Logic
 ==========================
-Phát hiện xe vi phạm vượt đèn đỏ bằng cách kiểm tra
-xe có vượt qua ĐƯỜNG THẲNG xác định bởi 2 điểm stop_line không.
+Phát hiện xe vi phạm vượt đèn đỏ.
 
-Nguyên lý hình học:
-  - Lấy tích có hướng (cross product) để xác định xe đang ở phía nào đường thẳng
-  - Frame trước: xe ở phía trên/ngang → Frame hiện tại: xe ở phía dưới → VI PHẠM
-  - Đèn XANH → bỏ qua, cho qua
-  - Đèn ĐỎ + xe vượt đường → VI PHẠM
+Nguyên lý:
+  - Dùng cross product để xác định xe ở phía nào của stop line
+  - Khi sign(cross) thay đổi giữa 2 frame → xe VỪA vượt qua
+  - Chỉ tính vi phạm khi đang đèn ĐỎ
+  - Chỉ tính khi xe đi từ trên xuống (y tăng) → tránh false positive khi lùi
 """
 
 
-def _cross_product_side(p1, p2, point):
+def _cross_product(p1, p2, point):
     """
-    Tính phía của 'point' so với đường thẳng qua p1→p2.
-    Dùng cross product: (p2-p1) × (point-p1)
-    > 0 → bên trái
-    < 0 → bên phải
-    = 0 → trên đường
+    Tích có hướng (cross product) của vector p1→p2 với p1→point.
+    Kết quả > 0 hoặc < 0 cho biết point đang ở phía nào của đường.
     """
     return ((p2[0] - p1[0]) * (point[1] - p1[1]) -
             (p2[1] - p1[1]) * (point[0] - p1[0]))
 
 
-def point_below_line(p1, p2, point):
-    """
-    Kiểm tra 'point' có ở phía DƯỚI đường p1→p2 không.
-    "Dưới" = phía xe di chuyển từ trên xuống (y tăng dần trong ảnh).
-    Giả sử p1 là điểm bên trái, p2 là điểm bên phải.
-    """
-    cross = _cross_product_side(p1, p2, point)
-    # Trong tọa độ ảnh (Y tăng xuống dưới):
-    # cross < 0 → điểm ở phía phải đường → tức là phía dưới nếu đường gần nằm ngang
-    # Cụ thể: với đường từ trái sang phải, phía dưới = cross < 0
-    return cross < 0
-
-
-def check_violation(light_state, vehicle_bbox, stop_line_pts):
-    """
-    Kiểm tra xe có vượt đèn đỏ không.
-
-    Args:
-        light_state: 'red' | 'green' | 'yellow' | 'unknown'
-        vehicle_bbox: (x1, y1, x2, y2)
-        stop_line_pts: ((x1,y1), (x2,y2)) — 2 điểm xác định vạch dừng
-                       hoặc None nếu chưa đặt
-
-    Returns:
-        True nếu VI PHẠM
-    """
-    if light_state != "red":
-        return False
-
-    if stop_line_pts is None:
-        return False
-
-    # Tâm dưới của xe (center-bottom) — điểm đại diện vị trí xe trên mặt đường
-    if hasattr(vehicle_bbox, 'tolist'):
-        vehicle_bbox = vehicle_bbox.tolist()
-
-    x1, y1, x2, y2 = vehicle_bbox
-    center_x = int((x1 + x2) / 2)
-    bottom_y = int(y2)
-    vehicle_point = (center_x, bottom_y)
-
-    p1, p2 = stop_line_pts
-
-    # Xe ở phía dưới đường stop line = đã vượt qua
-    return point_below_line(p1, p2, vehicle_point)
+def _get_center_bottom(bbox):
+    """Lấy điểm tâm-dưới của bbox — đại diện vị trí xe trên mặt đường."""
+    if hasattr(bbox, 'tolist'):
+        bbox = bbox.tolist()
+    x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
+    return (int((x1 + x2) / 2), int(y2))
 
 
 def has_crossed_line(prev_bbox, curr_bbox, stop_line_pts):
     """
     Kiểm tra xe có VỪA vượt qua stop line trong frame này không.
-    (So sánh vị trí frame trước vs frame hiện tại)
+
+    Logic:
+      - Tính cross product của tâm-dưới xe với stop line ở frame trước (prev)
+        và frame hiện tại (curr)
+      - Nếu dấu cross product thay đổi → xe vừa vượt qua
+      - Chỉ tính khi xe đang di chuyển XUỐNG (y tăng) → không phạt xe lùi
+
+    Args:
+        prev_bbox: (x1,y1,x2,y2) của xe ở frame TRƯỚC
+        curr_bbox: (x1,y1,x2,y2) của xe ở frame HIỆN TẠI
+        stop_line_pts: ((x1,y1), (x2,y2)) — 2 điểm xác định vạch dừng
 
     Returns:
-        True nếu xe vừa vượt qua (transition: trên → dưới)
+        True nếu xe vừa vượt qua stop line
     """
-    if stop_line_pts is None or prev_bbox is None:
+    if stop_line_pts is None or prev_bbox is None or curr_bbox is None:
         return False
 
     p1, p2 = stop_line_pts
 
-    def center_bottom(bbox):
-        if hasattr(bbox, 'tolist'):
-            bbox = bbox.tolist()
-        x1, y1, x2, y2 = bbox
-        return (int((x1 + x2) / 2), int(y2))
+    prev_pt = _get_center_bottom(prev_bbox)
+    curr_pt = _get_center_bottom(curr_bbox)
 
-    prev_pt = center_bottom(prev_bbox)
-    curr_pt = center_bottom(curr_bbox)
+    # Cross product ở 2 frame
+    prev_cross = _cross_product(p1, p2, prev_pt)
+    curr_cross = _cross_product(p1, p2, curr_pt)
 
-    was_above = not point_below_line(p1, p2, prev_pt)
-    is_below = point_below_line(p1, p2, curr_pt)
+    # Bỏ qua nếu nằm ngay trên đường (cross = 0)
+    if prev_cross == 0 or curr_cross == 0:
+        return False
 
-    return was_above and is_below
+    # Dấu thay đổi → xe vừa vượt qua đường
+    sign_changed = (prev_cross > 0) != (curr_cross > 0)
+
+    # Xe phải đang đi XUỐNG (y tăng) để tránh false positive
+    moving_down = curr_pt[1] > prev_pt[1]
+
+    return sign_changed and moving_down
