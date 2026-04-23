@@ -1,13 +1,13 @@
 """
-🚦 HỆ THỐNG AI GIÁM SÁT GIAO THÔNG
+ HỆ THỐNG AI GIÁM SÁT GIAO THÔNG
 =====================================
-Kiến trúc Dual-Model theo hướng dẫn giáo sư:
-  - Model 1: phathienden.pt   → Phát hiện đèn (green/red/yellow/off)
-  - Model 2: yolo11m.pt       → Phát hiện phương tiện (car/motorcycle/bus/truck)
-  - Model 3: phathienmu.pt    → Kiểm tra mũ bảo hiểm (xe máy)
+Kiến trúc Dual-Model:
+  - Model 1: phathiendenvadung.pt → Phát hiện đèn (green/red/yellow) + vạch dừng (stop_line)
+  - Model 2: yolo11m.pt           → Phát hiện phương tiện (car/motorcycle/bus/truck)
+  - Model 3: phathienmu.pt        → Kiểm tra mũ bảo hiểm (xe máy)
 
 Logic vi phạm:
-  - Đèn ĐỎ + cạnh dưới xe vượt stop_line → VI PHẠM vượt đèn đỏ
+  - Đèn ĐỎ + tâm xe vượt qua stop_line (model detect) → VI PHẠM vượt đèn đỏ
   - Xe máy + Without Helmet → VI PHẠM không đội mũ
 """
 
@@ -21,12 +21,9 @@ import numpy as np
 from datetime import datetime
 from ultralytics import YOLO
 
-from streamlit_image_coordinates import streamlit_image_coordinates
-from PIL import Image
-
 # Import utils
 from utils.drawing import draw_box, draw_stop_line, draw_light_status
-from utils.violation import has_crossed_line
+from utils.violation import has_crossed_line, is_below_line
 
 # === COCO CLASS IDs (yolo11m.pt) ===
 VEHICLE_CLASSES = [2, 3, 5, 7]  # car, motorcycle, bus, truck
@@ -37,7 +34,7 @@ VN_NAMES = {2: "Ô tô", 3: "Xe máy", 5: "Xe buýt", 7: "Xe tải"}
 # ===== GIAO DIỆN =====
 st.set_page_config(page_title="AI Traffic Monitor", page_icon="🚦", layout="wide")
 st.title("🚦 Hệ thống AI Giám sát Giao thông")
-st.caption("phathienden.pt (đèn) + yolo11m.pt (xe) + phathienmu.pt (mũ)")
+st.caption("phathiendenvadung.pt (đèn + vạch dừng) + yolo11m.pt (xe) + phathienmu.pt (mũ)")
 
 
 # ===== LOAD MODEL (cached) =====
@@ -45,14 +42,14 @@ st.caption("phathienden.pt (đèn) + yolo11m.pt (xe) + phathienmu.pt (mũ)")
 def load_model(path):
     return YOLO(path)
 
-light_model = load_model("phathienden.pt")    # Model đèn: green(0), off(1), red(2), yellow(3)
-vehicle_model = load_model("yolo11m.pt")       # Model xe: COCO
-helmet_model = load_model("phathienmu.pt")     # Model mũ: With/Without Helmet
+light_model = load_model("phathiendenvadung.pt")   # Model đèn + vạch dừng
+vehicle_model = load_model("yolo11m.pt")            # Model xe: COCO
+helmet_model = load_model("phathienmu.pt")          # Model mũ: With/Without Helmet
 
 
 # ===== SIDEBAR =====
 st.sidebar.header("⚙️ Cài đặt")
-conf_light = st.sidebar.slider("Confidence: Đèn", 0.1, 0.9, 0.5, 0.05)
+conf_light = st.sidebar.slider("Confidence: Đèn + Vạch dừng", 0.1, 0.9, 0.5, 0.05)
 conf_vehicle = st.sidebar.slider("Confidence: Xe", 0.1, 0.9, 0.4, 0.05)
 conf_helmet = st.sidebar.slider("Confidence: Mũ", 0.1, 0.9, 0.4, 0.05)
 
@@ -103,122 +100,16 @@ if uploaded_file is not None:
     os.makedirs(evidence_dir, exist_ok=True)
 
     # ==========================================================
-    # BƯỚC 1: ĐẶT STOP LINE bằng click 2 điểm trên ảnh
+    # QUÉT VIDEO — Không cần vẽ vạch dừng thủ công nữa!
+    # Model phathiendenvadung.pt tự detect đèn + vạch dừng
     # ==========================================================
 
-    # Session state lưu trạng thái (persist qua mọi rerun)
-    if "stop_pts" not in st.session_state:
-        st.session_state.stop_pts = []
-    if "last_click_key" not in st.session_state:
-        st.session_state.last_click_key = None
-    if "first_frame" not in st.session_state:
-        # Đọc frame đầu tiên và lưu vào session_state
-        # Chỉ đọc 1 lần duy nhất, tránh mỗi rerun lại consume frame mới
-        ret_first, frame0 = cap.read()
-        st.session_state.first_frame = frame0 if ret_first else None
-
-    # Khởi tạo stop_line_pts (tránh lỗi khi check_redlight=False)
-    stop_line_pts = None
-
-    if check_redlight:
-        st.subheader("📍 Bước 1: Vẽ vạch dừng")
-        st.markdown(
-            "🖱️ **Click 2 điểm** trên ảnh để xác định vạch dừng.  "
-            "Điểm 1 → Điểm 2 sẽ nối thành đường.  "
-            "Nhấn **Chọn lại** nếu chọn nhầm."
-        )
-
-        first_frame = st.session_state.first_frame
-        if first_frame is not None:
-            # Scale ảnh hiển thị (giữ tỷ lệ, max 800px)
-            DISPLAY_W = 800
-            scale = DISPLAY_W / vid_w
-            display_h = int(vid_h * scale)
-
-            # Vẽ preview trên first_frame
-            preview = first_frame.copy()
-            pts = st.session_state.stop_pts
-
-            # Vẽ các điểm đã chọn
-            for idx, p in enumerate(pts):
-                px, py = p["x"], p["y"]
-                cv2.circle(preview, (px, py), 10, (0, 255, 255), -1)
-                cv2.circle(preview, (px, py), 12, (0, 0, 0), 2)  # viền đen
-                cv2.putText(preview, f"P{idx+1}",
-                            (px + 14, py - 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-
-            if len(pts) == 2:
-                p1 = (pts[0]["x"], pts[0]["y"])
-                p2 = (pts[1]["x"], pts[1]["y"])
-                stop_line_pts = (p1, p2)
-
-                # Vẽ đường stop line
-                cv2.line(preview, p1, p2, (255, 0, 255), 4)
-                cv2.putText(preview, "STOP LINE",
-                            (min(p1[0], p2[0]), min(p1[1], p2[1]) - 14),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
-
-                # Overlay mờ vùng phía dưới stop line
-                avg_y = (p1[1] + p2[1]) // 2
-                overlay = preview.copy()
-                cv2.rectangle(overlay, (0, avg_y), (vid_w, vid_h), (0, 0, 200), -1)
-                preview = cv2.addWeighted(overlay, 0.12, preview, 0.88, 0)
-                cv2.putText(preview, "VUNG VI PHAM (den do)",
-                            (vid_w // 2 - 150, avg_y + 40),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
-            # Scale ảnh để hiển thị
-            preview_resized = cv2.resize(preview, (DISPLAY_W, display_h))
-            preview_pil = Image.fromarray(cv2.cvtColor(preview_resized, cv2.COLOR_BGR2RGB))
-
-            # Trạng thái hướng dẫn
-            n_pts = len(pts)
-            if n_pts == 0:
-                st.info("🖱️ Click điểm **1/2** trên ảnh (góc trái vạch dừng)")
-            elif n_pts == 1:
-                st.info("🖱️ Click điểm **2/2** trên ảnh (góc phải vạch dừng)")
-            else:
-                st.success("✅ Đã chọn xong! Có thể bắt đầu quét video.")
-                p1d, p2d = pts[0], pts[1]
-                st.caption(f"Điểm 1: ({p1d['x']}, {p1d['y']})  |  Điểm 2: ({p2d['x']}, {p2d['y']})")
-
-            # Ảnh clickable
-            clicked = streamlit_image_coordinates(preview_pil, key="stop_line_click")
-
-            # Xử lý click mới — tránh duplicate bằng cách kiểm tra key
-            if clicked is not None:
-                click_key = (clicked["x"], clicked["y"])
-                if (click_key != st.session_state.last_click_key
-                        and len(st.session_state.stop_pts) < 2):
-                    st.session_state.last_click_key = click_key
-                    real_x = max(0, min(int(clicked["x"] / scale), vid_w - 1))
-                    real_y = max(0, min(int(clicked["y"] / scale), vid_h - 1))
-                    st.session_state.stop_pts.append({"x": real_x, "y": real_y})
-                    st.rerun()
-
-            # Nút reset
-            col_res1, col_res2 = st.columns([1, 3])
-            with col_res1:
-                if st.button("🔄 Chọn lại", key="reset_pts"):
-                    st.session_state.stop_pts = []
-                    st.session_state.last_click_key = None
-                    st.rerun()
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-    # ==========================================================
-    # BƯỚC 2: QUÉT VIDEO
-    # ==========================================================
-    can_start = not (check_redlight and stop_line_pts is None)
-
-    if not check_redlight:
-        stop_line_pts = None  # Không cần stop line
-
-    if can_start and st.button("🚀 Bắt đầu Quét", type="primary", use_container_width=True):
+    if st.button("🚀 Bắt đầu Quét", type="primary", use_container_width=True):
 
         # --- Trạng thái ---
         current_light = "unknown"
+        stop_line_pts = None         # ((x1,y1), (x2,y2)) — từ model detect
+        stop_line_bbox = None        # bbox gốc vạch dừng
         violated_ids = set()         # Xe đã vi phạm đèn đỏ (sổ đen)
         helmet_violated_ids = set()  # Xe đã vi phạm mũ (sổ đen)
         plate_cache = {}             # track_id → biển số
@@ -253,33 +144,68 @@ if uploaded_file is not None:
                               text=f"Frame {frame_count}/{total_frames}")
 
             # ==========================================
-            # BƯỚC A: NHẬN DIỆN ĐÈN GIAO THÔNG
-            # Dùng phathienden.pt (chạy mỗi N frame)
+            # BƯỚC A: NHẬN DIỆN ĐÈN GIAO THÔNG + VẠCH DỪNG
+            # Dùng phathiendenvadung.pt (chạy mỗi N frame)
+            # Model detect cả đèn VÀ vạch dừng cùng lúc
             # ==========================================
             if processed_count % traffic_interval == 1 or traffic_interval == 1:
                 light_results = light_model(frame, conf=conf_light, verbose=False)
 
+                best_light_conf = 0
+                best_stop_conf = 0
+
                 for r in light_results:
                     if r.boxes is None or len(r.boxes) == 0:
                         continue
-                    # Lấy đèn có confidence cao nhất
-                    best_idx = r.boxes.conf.argmax()
-                    cls_id = int(r.boxes.cls[best_idx])
-                    detected_light = light_model.names[cls_id]  # 'green'/'red'/'yellow'/'off'
 
-                    if detected_light in ("red", "green", "yellow"):
-                        current_light = detected_light
-
-                    # Vẽ tất cả đèn phát hiện được
                     for i in range(len(r.boxes)):
-                        cls = int(r.boxes.cls[i])
-                        name = light_model.names[cls]
+                        cls_id = int(r.boxes.cls[i])
                         conf_val = float(r.boxes.conf[i])
-                        color_map = {"red": (0,0,255), "green": (0,255,0),
-                                     "yellow": (0,255,255), "off": (128,128,128)}
-                        draw_box(frame, r.boxes.xyxy[i],
-                                 f"{name.upper()} {conf_val:.2f}",
-                                 color_map.get(name, (200,200,200)))
+                        name = light_model.names[cls_id]
+                        bbox_xyxy = r.boxes.xyxy[i]
+                        x1, y1, x2, y2 = int(bbox_xyxy[0]), int(bbox_xyxy[1]), \
+                                          int(bbox_xyxy[2]), int(bbox_xyxy[3])
+
+                        if name == "stop_line":
+                            # === VẠCH DỪNG ===
+                            if conf_val > best_stop_conf:
+                                best_stop_conf = conf_val
+                                stop_line_bbox = (x1, y1, x2, y2)
+                                # Tính 2 điểm: lấy trung điểm Y của bbox
+                                mid_y = (y1 + y2) // 2
+                                stop_line_pts = ((x1, mid_y), (x2, mid_y))
+
+                            # Vẽ bbox vạch dừng (màu magenta)
+                            draw_box(frame, [x1, y1, x2, y2],
+                                     f"STOP LINE {conf_val:.2f}",
+                                     (255, 0, 255), 2)
+
+                        else:
+                            # === ĐÈN GIAO THÔNG ===
+                            # Ánh xạ tên class → trạng thái
+                            light_state_map = {
+                                "red_light": "red",
+                                "green_light": "green",
+                                "yellow_light": "yellow"
+                            }
+                            detected_light = light_state_map.get(name)
+
+                            if detected_light and conf_val > best_light_conf:
+                                best_light_conf = conf_val
+                                if detected_light != current_light:
+                                    print(f"\n🚦 Đèn đổi: {current_light} → "
+                                          f"{detected_light} (frame {frame_count})")
+                                current_light = detected_light
+
+                            # Vẽ bbox đèn
+                            color_map = {
+                                "red_light": (0, 0, 255),
+                                "green_light": (0, 255, 0),
+                                "yellow_light": (0, 255, 255)
+                            }
+                            draw_box(frame, [x1, y1, x2, y2],
+                                     f"{name.upper()} {conf_val:.2f}",
+                                     color_map.get(name, (200, 200, 200)))
 
             # ==========================================
             # BƯỚC B: NHẬN DIỆN PHƯƠNG TIỆN + TRACKING
@@ -308,18 +234,20 @@ if uploaded_file is not None:
 
                     # ==========================================
                     # BƯỚC C: KIỂM TRA VI PHẠM VƯỢT ĐÈN ĐỎ
-                    # Dùng has_crossed_line(): kiểm tra tâm-dưới xe
-                    # vượt qua ĐƯỜNG THẲNG 2 điểm (hình học chính xác)
+                    # Tâm xe vượt qua stop line (từ model) khi đèn đỏ
                     # ==========================================
                     if check_redlight and stop_line_pts is not None and track_id is not None:
                         if track_id in violated_ids:
-                            is_redlight_vio = True  # Đã trong sổ đen
+                            is_redlight_vio = True
                         elif current_light == "red":
                             prev_bbox = prev_bbox_cache.get(track_id)
                             crossed = has_crossed_line(prev_bbox, bbox, stop_line_pts)
+
                             if crossed:
                                 is_redlight_vio = True
                                 violated_ids.add(track_id)
+                                print(f"⚠️ VI PHẠM! ID{track_id} | frame={frame_count} "
+                                      f"| stop_line={stop_line_pts}")
                                 # 📸 Chụp bằng chứng
                                 ev = os.path.join(evidence_dir,
                                     f"redlight_ID{track_id}_f{frame_count}.jpg")
@@ -334,7 +262,7 @@ if uploaded_file is not None:
                                     "evidence": ev
                                 })
 
-                    # Lưu bbox hiện tại cho frame sau
+                    # Lưu bbox hiện tại cho frame sau (luôn luôn, bất kể đèn gì)
                     if track_id is not None:
                         prev_bbox_cache[track_id] = bbox
 
@@ -403,6 +331,8 @@ if uploaded_file is not None:
                     # ==========================================
                     # BƯỚC F: VẼ KẾT QUẢ
                     # ==========================================
+                    cx = (x1 + x2) // 2
+                    cy = (y1 + y2) // 2
                     has_violation = is_redlight_vio or is_helmet_vio
 
                     if has_violation:
@@ -416,6 +346,9 @@ if uploaded_file is not None:
                         if plate_text:
                             label += f" [{plate_text}]"
                         draw_box(frame, bbox, label, (0, 0, 255), 3)
+                        # Vẽ tâm xe đỏ (vi phạm)
+                        cv2.circle(frame, (cx, cy), 6, (0, 0, 255), -1)
+                        cv2.circle(frame, (cx, cy), 8, (255, 255, 255), 2)
                     elif show_all:
                         # XANH — BÌNH THƯỜNG
                         id_str = f"ID{track_id} " if track_id else ""
@@ -425,12 +358,12 @@ if uploaded_file is not None:
                         draw_box(frame, bbox, label, (0, 255, 0))
 
             # ==========================================
-            # VẼ HUD + STOP LINE
+            # VẼ HUD + STOP LINE (từ model detect)
             # ==========================================
             if stop_line_pts is not None:
                 p1, p2 = stop_line_pts
                 cv2.line(frame, p1, p2, (255, 0, 255), 3)
-                cv2.putText(frame, "STOP LINE",
+                cv2.putText(frame, "STOP LINE (AI)",
                             (min(p1[0], p2[0]), min(p1[1], p2[1]) - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
             draw_light_status(frame, current_light)
@@ -441,12 +374,14 @@ if uploaded_file is not None:
 
             plates_found = sum(1 for v in plate_cache.values() if v)
             light_vn = {"red":"ĐỎ","green":"XANH","yellow":"VÀNG"}.get(current_light,"--")
+            stop_status = "✅ Đã detect" if stop_line_pts else "⏳ Chờ detect..."
             stats_ph.markdown(f"""
 ### 📊 Live
 | | |
 |--|--|
 | Frame | **{frame_count}/{total_frames}** |
 | 🚦 Đèn | **{light_vn}** |
+| 🛑 Vạch dừng | **{stop_status}** |
 | 🔴 VP Đèn | **{len(violated_ids)}** |
 | 🪖 VP Mũ | **{len(helmet_violated_ids)}** |
 | 🔢 Biển số | **{plates_found}** |
@@ -554,7 +489,10 @@ else:
     # Trang chủ
     st.markdown("""
     ### 📖 Hướng dẫn
-    1. Upload video → 2. Đặt vạch dừng (slider) → 3. Nhấn Quét → 4. Xem kết quả
+    1. Upload video → 2. Nhấn **Bắt đầu Quét** → 3. Xem kết quả
+
+    > 🆕 **Model mới `phathiendenvadung.pt`** tự phát hiện đèn giao thông VÀ vạch dừng —
+    > không cần vẽ vạch dừng thủ công nữa!
 
     ---
     ### 🏗️ Kiến trúc
@@ -563,11 +501,11 @@ else:
     app.py
     ├── utils/
     │   ├── drawing.py      ← draw_box(), draw_stop_line(), draw_light_status()
-    │   └── violation.py    ← check_violation(light, bbox, stop_line)
+    │   └── violation.py    ← has_crossed_line(), is_below_line()
     │
-    ├── phathienden.pt      ← Model đèn: green/red/yellow/off
-    ├── yolo11m.pt          ← Model xe: car/motorcycle/bus/truck (COCO)
-    └── phathienmu.pt       ← Model mũ: With/Without Helmet
+    ├── phathiendenvadung.pt ← Model đèn + vạch dừng: green_light/red_light/yellow_light/stop_line
+    ├── yolo11m.pt           ← Model xe: car/motorcycle/bus/truck (COCO)
+    └── phathienmu.pt        ← Model mũ: With/Without Helmet
     ```
 
     ### 🔄 Pipeline
@@ -575,11 +513,11 @@ else:
     ```
     Frame
       │
-      ├──→ [A] phathienden.pt → Đèn đỏ/xanh/vàng
+      ├──→ [A] phathiendenvadung.pt → Đèn đỏ/xanh/vàng + Vạch dừng (tự động)
       │
       ├──→ [B] yolo11m.pt + ByteTrack → Xe + ID tracking
       │         │
-      │         ├──→ [C] check_violation() → Đèn đỏ + qua vạch = PHẠT
+      │         ├──→ [C] check_violation() → Đèn đỏ + qua vạch (AI detect) = PHẠT
       │         ├──→ [D] phathienmu.pt → Xe máy không mũ = PHẠT
       │         └──→ [E] EasyOCR → Đọc biển số (1 lần/xe)
       │

@@ -4,16 +4,16 @@ Violation Detection Engine
 Bộ não chính — kết hợp tất cả Experts để phát hiện vi phạm.
 
 Logic vượt đèn đỏ:
-  - Stop line kết nối với trạng thái đèn
+  - Stop line được model phathiendenvadung.pt tự phát hiện
   - Đèn XANH → phương tiện được phép đi qua
-  - Đèn ĐỎ  → nếu TÂM phương tiện đi qua stop_line → VI PHẠM
+  - Đèn ĐỎ  → nếu TÂM phương tiện vượt qua stop_line → VI PHẠM
   - Chỉ đánh dấu vi phạm 1 lần duy nhất mỗi xe (sổ đen)
 """
 
 import cv2
 import os
 from dataclasses import dataclass, field
-from typing import Dict, Set, List, Optional
+from typing import Dict, Set, List, Optional, Tuple
 from .vehicle_detector import DetectedObject
 
 
@@ -35,7 +35,7 @@ class ViolationState:
     def __init__(self):
         self.helmet_violated_ids: Set[int] = set()
         self.redlight_violated_ids: Set[int] = set()
-        self.vehicle_prev_center_y: Dict[int, int] = {}  # track_id → center_y frame trước
+        self.prev_bbox_cache: Dict[int, list] = {}  # track_id → bbox frame trước
         self.violations: List[Violation] = []
 
     def is_helmet_violated(self, track_id: int) -> bool:
@@ -64,41 +64,43 @@ class ViolationState:
             evidence_path=ev_path
         ))
 
-    def check_redlight_crossing(self, obj: DetectedObject, stop_line_y: int,
+    def check_redlight_crossing(self, obj: DetectedObject,
+                                 stop_line_pts: Optional[Tuple],
                                  traffic_state: str, frame_number: int,
                                  fps: float, evidence_dir: str, frame=None) -> bool:
         """
         Kiểm tra xe có vượt đèn đỏ không.
 
         Logic:
-        - Lấy center_y của vehicle
-        - So sánh với center_y ở frame trước
-        - Nếu đèn ĐỎ + center_y vượt qua stop_line → VI PHẠM
-        - Nếu đèn XANH → cho phép đi qua, không phạt
+        - stop_line_pts = ((x1,y1), (x2,y2)) từ model detect
+        - So sánh cross product giữa tâm xe frame trước và hiện tại
+        - Sign change + đèn ĐỎ → VI PHẠM
 
         Returns: True nếu vi phạm
         """
-        if obj.track_id is None or stop_line_y is None:
+        if obj.track_id is None or stop_line_pts is None:
             return False
 
         # Đã nằm trong sổ đen
         if obj.track_id in self.redlight_violated_ids:
             return True
 
-        current_center_y = obj.center_y
-        prev_center_y = self.vehicle_prev_center_y.get(obj.track_id)
+        curr_bbox = [obj.x1, obj.y1, obj.x2, obj.y2]
+        prev_bbox = self.prev_bbox_cache.get(obj.track_id)
 
-        # Lưu vị trí cho frame sau
-        self.vehicle_prev_center_y[obj.track_id] = current_center_y
+        # Lưu bbox cho frame sau
+        self.prev_bbox_cache[obj.track_id] = curr_bbox
 
         # Đèn XANH hoặc VÀNG → cho phép đi, không xét
         if traffic_state != "red":
             return False
 
         # Đèn ĐỎ → kiểm tra tâm xe có vượt qua stop_line không
-        if prev_center_y is not None:
-            # Tâm xe đi từ TRÊN stop_line xuống DƯỚI stop_line
-            if prev_center_y <= stop_line_y < current_center_y:
+        if prev_bbox is not None:
+            from utils.violation import has_crossed_line
+            crossed = has_crossed_line(prev_bbox, curr_bbox, stop_line_pts)
+
+            if crossed:
                 self.redlight_violated_ids.add(obj.track_id)
 
                 ev_path = ""
