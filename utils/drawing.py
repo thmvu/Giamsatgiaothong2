@@ -53,3 +53,32 @@ def draw_light_status(frame, light_state):
     cv2.rectangle(frame, (5, 5), (230, 42), color, 2)
     cv2.putText(frame, f"Den: {text}", (12, 33),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+
+
+def draw_polygon(frame, polygon_pts, color=(255, 0, 255), thickness=2, alpha=0.3):
+    """
+    Vẽ Polygon trong suốt (overlay) lên frame.
+    
+    Args:
+        frame: Ảnh nền BGR
+        polygon_pts: Mảng numpy chứa các điểm của polygon
+        color: Màu BGR
+        thickness: Độ dày viền (nếu <0 sẽ đổ màu toàn bộ polygon)
+        alpha: Độ mờ (opacity) của màu đổ nền
+    """
+    import numpy as np
+    
+    if polygon_pts is None or len(polygon_pts) < 3: return
+    
+    poly = np.array(polygon_pts, np.int32)
+    
+    # Tạo overlay để vẽ màu trong suốt
+    overlay = frame.copy()
+    cv2.fillPoly(overlay, [poly], color)
+    
+    # Trộn overlay với frame gốc
+    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+    
+    # Vẽ thêm viền đậm
+    if thickness > 0:
+        cv2.polylines(frame, [poly], isClosed=True, color=color, thickness=thickness)

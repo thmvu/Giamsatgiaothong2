@@ -68,7 +68,44 @@ def has_crossed_line(prev_bbox, curr_bbox, stop_line_pts):
     if prev_cross == 0 or curr_cross == 0:
         return False
 
-    # Dấu thay đổi = vượt qua
     sign_changed = (prev_cross > 0) != (curr_cross > 0)
 
     return sign_changed
+
+
+def is_overlapping_polygon(bbox, polygon_pts):
+    """
+    Kiểm tra xem Bounding Box (của xe) có đè lên Polygon (của vạch dừng do SAM tạo) hay không.
+    Kiểm tra các điểm chính: 4 góc và tâm của bbox, cộng thêm trung điểm cạnh dưới.
+    Chỉ cần 1 trong các điểm này nằm trong Polygon là tính vi phạm.
+    """
+    import cv2
+    import numpy as np
+
+    if polygon_pts is None or len(polygon_pts) < 3:
+        return False
+
+    if hasattr(bbox, 'tolist'):
+        bbox = bbox.tolist()
+        
+    x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+    
+    # Định nghĩa các điểm nhạy cảm của bbox để check
+    points_to_check = [
+        (x1, y1),               # Góc trên trái
+        (x2, y1),               # Góc trên phải
+        (x2, y2),               # Góc dưới phải
+        (x1, y2),               # Góc dưới trái
+        ((x1 + x2) // 2, (y1 + y2) // 2),  # Tâm
+        ((x1 + x2) // 2, y2)    # Trung điểm đáy (bánh xe)
+    ]
+    
+    # Đảm bảo format của polygon hợp lệ với cv2
+    poly = np.array(polygon_pts, np.int32)
+    
+    for pt in points_to_check:
+        # pointPolygonTest trả về >= 0 nếu điểm nằm trên cạnh hoặc bên trong polygon
+        if cv2.pointPolygonTest(poly, pt, measureDist=False) >= 0:
+            return True
+            
+    return False
