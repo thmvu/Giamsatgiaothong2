@@ -1,6 +1,6 @@
 sam2_b.pt
-vachkeduongbbox.pt
-*.pt
+
+
 *.onnx
 __pycache__/
 *.pyc
