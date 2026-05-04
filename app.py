@@ -512,9 +512,9 @@ if uploaded_file is not None:
                         if track_id in violated_ids:
                             is_redlight_vio = True
                         elif current_light == "red":
-                            # Vi phạm khi bbox xe giao cắt / đi qua stop polygon
-                            # is_overlapping_polygon kiểm tra 4 góc + tâm + trung điểm đáy bbox
-                            if is_overlapping_polygon([x1, y1, x2, y2], global_stop_polygon):
+                            # Vi phạm khi TOÀN BỘ bbox đã đi qua stop line
+                            # y1 > stop_y → cạnh TRÊN (đuôi xe) đã vượt qua vạch → xe đi qua hoàn toàn
+                            if y1 > stop_y:
                                 is_redlight_vio = True
                                 violated_ids.add(track_id)
                                 ev = os.path.join(evidence_dir, f"redlight_ID{track_id}_f{frame_count}.jpg")
