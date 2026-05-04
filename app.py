@@ -204,13 +204,16 @@ def extract_stop_polygon_yolo(frame, yolo_line_model, sam2_model, light_bbox=Non
                 mask_uint8 = cv2.resize(mask_uint8, (w_frame, h_frame),
                                         interpolation=cv2.INTER_NEAREST)
 
-            # ★ Y-CLIP: chỉ giữ pixel trong dải Y của YOLO bbox ±padding
-            padding = 15
+            # ★ STRICT CLIP: Chỉ giữ pixel trong dải Y của YOLO bbox (không padding)
+            # → SAM2 chỉ được lan NGANG, không được lan DỌC ra ngoài vùng vạch
             clip_mask = np.zeros_like(mask_uint8)
-            yc_top = max(by1 - padding, 0)
-            yc_bot = min(by2 + padding, h_frame)
-            clip_mask[yc_top:yc_bot, :] = mask_uint8[yc_top:yc_bot, :]
-            print(f"✂️ Y-clip mask: y=[{yc_top},{yc_bot}]")
+            yc_top = max(by1, 0)
+            yc_bot = min(by2, h_frame)
+            # Clip thêm X: chỉ lấy phần mask nằm trong bbox X (mở rộng thêm extend_left phía trái)
+            xc_left = max(bx1 - extend_left, 0)
+            xc_right = min(bx2, w_frame)
+            clip_mask[yc_top:yc_bot, xc_left:xc_right] = mask_uint8[yc_top:yc_bot, xc_left:xc_right]
+            print(f"✂️ Strict clip mask: y=[{yc_top},{yc_bot}], x=[{xc_left},{xc_right}]")
 
             contours, _ = cv2.findContours(clip_mask, cv2.RETR_EXTERNAL,
                                            cv2.CHAIN_APPROX_SIMPLE)
@@ -509,12 +512,19 @@ if uploaded_file is not None:
                         if track_id in violated_ids:
                             is_redlight_vio = True
                         elif current_light == "red":
-                            # Vi phạm khi điểm đáy bbox (mũi xe / bánh xe) vượt qua stop_y
-                            if y2 > stop_y:
+                            # Vi phạm khi bbox xe giao cắt / đi qua stop polygon
+                            # is_overlapping_polygon kiểm tra 4 góc + tâm + trung điểm đáy bbox
+                            if is_overlapping_polygon([x1, y1, x2, y2], global_stop_polygon):
                                 is_redlight_vio = True
                                 violated_ids.add(track_id)
                                 ev = os.path.join(evidence_dir, f"redlight_ID{track_id}_f{frame_count}.jpg")
-                                cv2.imwrite(ev, frame)
+                                # Vẽ khoanh đỏ xe vi phạm lên ảnh bằng chứng
+                                ev_frame = frame.copy()
+                                cv2.rectangle(ev_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                                cv2.putText(ev_frame, f"VUOT DEN DO ID{track_id}",
+                                            (x1, max(y1 - 10, 10)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                                cv2.imwrite(ev, ev_frame)
                                 violations_log.append({
                                     "time": round(frame_count / max(fps,1), 2),
                                     "frame": frame_count, "type": "Vượt đèn đỏ",
