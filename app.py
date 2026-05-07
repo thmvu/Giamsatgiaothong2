@@ -3,16 +3,16 @@
 =====================================
 Kiến trúc "Ma Thuật" — Promptable Segmentation:
   - Giai đoạn 1 (Instant Calibration - Frame đầu tiên):
-    1. Detect đèn giao thông (phathienden.pt) → lấy vị trí đèn.
-    2. YOLO-BBox (vachkeduongbbox.pt) → tìm BBox vạch dừng gần đèn nhất.
-    3. SAM (FastSAM-s.pt) → nhận BBox, segment chính xác từng milimet vạch sơn.
+    1. Detect đèn giao thông (models/phathienden.pt) → lấy vị trí đèn.
+    2. YOLO-BBox (models/vachkeduongbbox1.pt) → tìm BBox vạch dừng gần đèn nhất.
+    3. SAM (models/sam2_b.pt) → nhận BBox, segment chính xác từng milimet vạch sơn.
     4. Fallback: OpenCV (adaptiveThreshold + contour) nếu YOLO/SAM fail.
     → Lưu Polygon vĩnh viễn (STATIC_STOP_POLYGON).
     → Giải phóng YOLO-BBox + SAM khỏi bộ nhớ (chỉ chạy 1 lần duy nhất!).
   - Giai đoạn 2 (Real-time Detection — siêu nhanh):
-      + Model 1: phathienden.pt  → Phát hiện đèn giao thông, xác thực HSV chống nhiễu.
-      + Model 2: yolo11m.pt      → Phát hiện phương tiện (car/motorcycle/bus/truck)
-      + Model 3: phathienmu.pt   → Kiểm tra mũ bảo hiểm (xe máy)
+      + Model 1: models/phathienden.pt  → Phát hiện đèn giao thông, xác thực HSV chống nhiễu.
+      + Model 2: models/yolo11m.pt      → Phát hiện phương tiện (car/motorcycle/bus/truck)
+      + Model 3: models/phathienmu.pt   → Kiểm tra mũ bảo hiểm (xe máy)
       (KHÔNG chạy SAM hay YOLO-vạch ở giai đoạn này → tối ưu hiệu năng!)
 
 Logic vi phạm:
@@ -60,17 +60,17 @@ def load_model(path):
     return YOLO(path)
 
 # Model đèn giao thông (chỉ detect đèn đỏ/xanh/vàng)
-light_model = load_model("phathienden.pt")          # Model đèn (chỉ đèn)
-vehicle_model = load_model("yolo11m.pt")            # Model xe: COCO
-helmet_model = load_model("phathienmu.pt")          # Model mũ
+light_model = load_model("models/phathienden.pt")          # Model đèn (chỉ đèn)
+vehicle_model = load_model("models/yolo11m.pt")            # Model xe: COCO
+helmet_model = load_model("models/phathienmu.pt")          # Model mũ
 
 # === CALIBRATION MODELS (sẽ giải phóng sau frame đầu tiên) ===
 # Không dùng @st.cache_resource vì sẽ xóa khỏi RAM sau khi calibrate xong
 @st.cache_resource
 def load_calibration_models():
     """Load YOLO-BBox vạch + SAM2 cho calibration. Sẽ giải phóng sau."""
-    yolo_line = YOLO("vachkeduongbbox1.pt")   # YOLO detect BBox vạch kẻ đường
-    sam2 = SAM("sam2_b.pt")                  # SAM2 segment chính xác theo góc camera
+    yolo_line = YOLO("models/vachkeduongbbox1.pt")   # YOLO detect BBox vạch kẻ đường
+    sam2 = SAM("models/sam2_b.pt")                  # SAM2 segment chính xác theo góc camera
     return yolo_line, sam2
 
 # ===== SIDEBAR =====
@@ -714,7 +714,7 @@ else:
     1. Upload video → 2. Nhấn **Bắt đầu Quét** → 3. Xem kết quả (Calibration tức thì!)
 
     > 🪄 **Kiến trúc "Ma Thuật" — One-time Initialization:**
-    > - **Frame 1**: `vachkeduongbbox.pt` (YOLO-BBox) tìm vạch dừng → `FastSAM-s.pt` (SAM) segment chính xác từng milimet vạch sơn. (Không dùng OpenCV)
+    > - **Frame 1**: `models/vachkeduongbbox1.pt` (YOLO-BBox) tìm vạch dừng → `models/sam2_b.pt` (SAM) segment chính xác từng milimet vạch sơn. (Không dùng OpenCV)
     > - **Frame 2+**: SAM + YOLO-vạch được giải phóng khỏi RAM/GPU. Chỉ chạy 3 model nhẹ: đèn, xe, mũ → **Siêu nhanh!**
     > - **HSV Crop & Classify**: Kiểm tra mật độ pixel đỏ nửa trên hộp đèn → Chống nhiễu biển quảng cáo.
     """)
