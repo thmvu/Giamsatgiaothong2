@@ -34,7 +34,13 @@ from ultralytics import YOLO, SAM, FastSAM
 
 # Import utils
 from utils.drawing import draw_box, draw_stop_line, draw_light_status, draw_polygon
-from utils.violation import has_crossed_line, is_below_line, is_overlapping_polygon
+from utils.violation import (
+    check_redlight_violation, save_violation_evidence,
+    get_stop_line_from_polygon, draw_stop_line_on_frame,
+    cleanup_violation_memory,
+    # legacy
+    has_crossed_line, is_below_line, is_overlapping_polygon
+)
 
 # === COCO CLASS IDs (yolo11m.pt) ===
 VEHICLE_CLASSES = [2, 3, 5, 7]  # car, motorcycle, bus, truck
@@ -63,7 +69,7 @@ helmet_model = load_model("phathienmu.pt")          # Model mũ
 @st.cache_resource
 def load_calibration_models():
     """Load YOLO-BBox vạch + SAM2 cho calibration. Sẽ giải phóng sau."""
-    yolo_line = YOLO("vachkeduongbbox.pt")   # YOLO detect BBox vạch kẻ đường
+    yolo_line = YOLO("vachkeduongbbox1.pt")   # YOLO detect BBox vạch kẻ đường
     sam2 = SAM("sam2_b.pt")                  # SAM2 segment chính xác theo góc camera
     return yolo_line, sam2
 
@@ -80,6 +86,8 @@ conf_stop_line = st.sidebar.slider("Confidence: Vạch dừng (YOLO-BBox)", 0.1,
     help="Ngưỡng tin cậy cho model detect vạch kẻ đường")
 stop_line_extend_left = st.sidebar.slider("↔️ Mở rộng trái (px)", 0, 500, 150, 10,
     help="Kéo dài vạch dừng sang bên trái thêm bao nhiêu pixel")
+stop_line_offset_up = st.sidebar.slider("⬆️ Dịch vạch lên (px)", 0, 100, 20, 5,
+    help="Dịch ngưỡng phát hiện lên trên N pixel so với cạnh trên của vạch, tránh false-positive")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🔍 Tính năng")
@@ -301,12 +309,12 @@ if uploaded_file is not None:
 
         # --- Trạng thái ---
         current_light = "unknown"
-        global_stop_polygon = None  
+        global_stop_polygon = None
+        global_stop_line_pts = None  # ((x1,y1),(x2,y2)) — đoạn thẳng stop line ngang
 
-        violated_ids = set()         # Sổ đen đèn đỏ
+        redlight_memory = {}         # {track_id: {'saved': bool}} — proximity violation
         helmet_violated_ids = set()  # Sổ đen mũ
-        plate_cache = {}             
-        prev_bbox_cache = {}         
+        plate_cache = {}
         violations_log = []
 
         # --- UI ---
@@ -433,6 +441,13 @@ if uploaded_file is not None:
         
         progress.progress(0, text="✅ Calibration xong! SAM đã giải phóng. Bắt đầu theo dõi...")
 
+        # Tính stop line ngang từ polygon (nâng lên offset_up px)
+        global_stop_line_pts = None
+        if global_stop_polygon is not None:
+            global_stop_line_pts = get_stop_line_from_polygon(
+                global_stop_polygon, offset_up=stop_line_offset_up)
+            print(f"🛑 global_stop_line_pts = {global_stop_line_pts}")
+
         # =============================================
         # VÒNG LẶP CHÍNH — REAL-TIME DETECTION
         # Bắt đầu từ frame 2 (chỉ mất 1 frame!)
@@ -508,32 +523,29 @@ if uploaded_file is not None:
                     plate_text = ""
 
                     # --- KIỂM TRA VƯỢT ĐÈN ĐỎ ---
-                    if check_redlight and global_stop_polygon is not None and track_id is not None:
-                        if track_id in violated_ids:
-                            is_redlight_vio = True
-                        elif current_light == "red":
-                            # Vi phạm khi TOÀN BỘ bbox đã đi qua stop line
-                            # y1 > stop_y → cạnh TRÊN (đuôi xe) đã vượt qua vạch → xe đi qua hoàn toàn
-                            if y1 > stop_y:
-                                is_redlight_vio = True
-                                violated_ids.add(track_id)
-                                ev = os.path.join(evidence_dir, f"redlight_ID{track_id}_f{frame_count}.jpg")
-                                # Vẽ khoanh đỏ xe vi phạm lên ảnh bằng chứng
-                                ev_frame = frame.copy()
-                                cv2.rectangle(ev_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                                cv2.putText(ev_frame, f"VUOT DEN DO ID{track_id}",
-                                            (x1, max(y1 - 10, 10)),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                                cv2.imwrite(ev, ev_frame)
+                    # Logic proximity + side:
+                    #   dist(bánh xe, stop_line) < threshold  VÀ  bánh xe đã qua vạch (dy>0)
+                    #   → VI PHẠM (ghi nhận 1 lần/xe, không cần prev_bbox)
+                    if check_redlight and global_stop_line_pts is not None and track_id is not None:
+                        is_redlight_vio = check_redlight_violation(
+                            track_id, bbox, global_stop_line_pts,
+                            current_light, redlight_memory, threshold=40
+                        )
+                        if is_redlight_vio:
+                            ev_path = save_violation_evidence(
+                                track_id, frame, frame_count,
+                                x1, y1, x2, y2,
+                                global_stop_line_pts, redlight_memory,
+                                evidence_dir, fps=fps,
+                                cls_name=VN_NAMES.get(cls_id, class_name)
+                            )
+                            if ev_path:   # Mới lưu lần đầu → thêm vào log
                                 violations_log.append({
-                                    "time": round(frame_count / max(fps,1), 2),
+                                    "time": round(frame_count / max(fps, 1), 2),
                                     "frame": frame_count, "type": "Vượt đèn đỏ",
                                     "vehicle": VN_NAMES.get(cls_id, class_name),
-                                    "track_id": track_id, "plate": "", "evidence": ev
+                                    "track_id": track_id, "plate": "", "evidence": ev_path
                                 })
-
-                    if track_id is not None:
-                        prev_bbox_cache[track_id] = bbox
 
                     # --- KIỂM TRA MŨ BẢO HIỂM ---
                     if check_helmet_enabled and cls_id == MOTORBIKE_CLASS and track_id is not None:
@@ -596,10 +608,15 @@ if uploaded_file is not None:
                         draw_box(frame, bbox, label, (0, 0, 255), 3)
                     # Xe bình thường: KHÔNG vẽ — video sạch hơn
 
-            # --- VẼ HUD + GLOBAL STOP LINE ---
-            # Stop line ẩn trên video (vẫn dùng để check vi phạm)
-            # draw_polygon(frame, global_stop_polygon, (255, 0, 255), 2, alpha=0.3)
-            # cv2.putText(frame, "STOP LINE", ...)
+            # --- Dọn violation_memory cho xe không còn track ---
+            current_ids = set()
+            for r in vehicle_results:
+                if r.boxes is not None and r.boxes.id is not None:
+                    for tid in r.boxes.id.tolist():
+                        current_ids.add(int(tid))
+            cleanup_violation_memory(redlight_memory, current_ids)
+
+            # --- VẼ HUD (KHÔNG vẽ stop line trên video live) ---
             draw_light_status(frame, current_light)
 
             # Hiển thị
@@ -615,7 +632,7 @@ if uploaded_file is not None:
 | Frame | **{frame_count}/{total_frames}** |
 | 🚦 Đèn | **{light_vn}** |
 | 🛑 Vạch | **{stop_status}** |
-| 🔴 VP Đèn | **{len(violated_ids)}** |
+| 🔴 VP Đèn | **{len(redlight_memory)}** |
 | 🪖 VP Mũ | **{len(helmet_violated_ids)}** |
 | 🔢 Biển số | **{plates_found}** |
             """)
@@ -628,9 +645,9 @@ if uploaded_file is not None:
         st.markdown("---")
         st.header("📊 Tổng kết")
 
-        total_vio = len(violated_ids) + len(helmet_violated_ids)
+        total_vio = len(redlight_memory) + len(helmet_violated_ids)
         c1, c2, c3 = st.columns(3)
-        with c1: st.metric("🔴 Vượt đèn đỏ", len(violated_ids))
+        with c1: st.metric("🔴 Vượt đèn đỏ", len(redlight_memory))
         with c2: st.metric("🪖 Không mũ", len(helmet_violated_ids))
         with c3: st.metric("⚠️ Tổng VP", total_vio)
 
