@@ -1,4 +1,7 @@
 sam2_b.pt
+venv_paddle/
+venv/
+.venv/
 
 
 *.onnx

@@ -42,6 +42,9 @@ from utils.violation import (
     has_crossed_line, is_below_line, is_overlapping_polygon
 )
 
+# Import License Plate pipeline
+from core.plate_reader import LicensePlateDetector, PlateReader
+
 # === COCO CLASS IDs (yolo11m.pt) ===
 VEHICLE_CLASSES = [2, 3, 5, 7]  # car, motorcycle, bus, truck
 MOTORBIKE_CLASS = 3
@@ -95,22 +98,44 @@ check_redlight = st.sidebar.checkbox("🔴 Phát hiện vượt đèn đỏ", va
 check_helmet_enabled = st.sidebar.checkbox("🪖 Kiểm tra mũ bảo hiểm", value=True)
 check_plate_enabled = st.sidebar.checkbox("🔢 Nhận dạng biển số (OCR)", value=True)
 
+if check_plate_enabled:
+    st.sidebar.markdown(" ")
+    st.sidebar.caption("🔍 Chỉnh độ nhạy biển số — giảm nếu mất nhiều biển")
+    conf_lp  = st.sidebar.slider(
+        "YOLO Biển số — conf", 0.05, 0.50, 0.20, 0.05,
+        help="Ngưỡng YOLO phát hiện vùng biển số trong ảnh xe.\nGiảm = nhạy hơn nhưng dễ false-positive\nTăng = chất lượng hơn nhưng có thể bỏ sót biển nhỏ"
+    )
+    conf_ocr = st.sidebar.slider(
+        "OCR Score — ngưỡng chấp nhận", 0.30, 0.90, 0.50, 0.05,
+        help="Chỉ giữ kết quả OCR có score cao hơn ngưỡng này.\nGiảm = chấp nhận cả kết quả mờ\nTăng = chỉ giữ kết quả rất chắc chắn"
+    )
+else:
+    conf_lp  = 0.20
+    conf_ocr = 0.50
+
 st.sidebar.markdown("---")
 st.sidebar.header("⚡ Hiệu năng")
 process_every_n = st.sidebar.slider("Xử lý mỗi N frame", 1, 5, 1)
 traffic_interval = st.sidebar.slider("Check đèn mỗi N frame", 1, 10, 3)
 show_all = st.sidebar.checkbox("👁️ Hiện tất cả xe", value=True)
 
-# ===== OCR (lazy load) =====
+# ===== BIỂN SỐ — YOLO LP Detector + RapidOCR =====
+# Thêm _v2 vào tên hàm để force Streamlit reload cache khi code thay đổi
 @st.cache_resource
-def load_ocr():
-    try:
-        import easyocr
-        return easyocr.Reader(['en'], gpu=True)
-    except ImportError:
-        return None
+def load_plate_models_v2():
+    """
+    Load YOLO biển số + RapidOCR (PaddleOCR model qua ONNX).
+    Cache vĩnh viễn trong session (chỉ load 1 lần).
+    Nếu bị lỗi stale cache: dừng app → chạy lại run.bat.
+    """
+    lp_det = LicensePlateDetector("models/license_plate_detector.pt", conf=0.20)
+    lp_ocr = PlateReader(use_gpu=True)
+    return lp_det, lp_ocr
 
-ocr_reader = load_ocr() if check_plate_enabled else None
+if check_plate_enabled:
+    lp_detector, plate_reader_ocr = load_plate_models_v2()
+else:
+    lp_detector, plate_reader_ocr = None, None
 
 # ===== HÀM HỖ TRỢ =====
 # Hàm OpenCV Fallback đã được gỡ bỏ theo yêu cầu
@@ -571,27 +596,44 @@ if uploaded_file is not None:
                                             break
                                     if is_helmet_vio: break
 
-                    # --- BIỂN SỐ OCR ---
-                    if check_plate_enabled and ocr_reader and track_id is not None:
-                        if track_id in plate_cache:
-                            plate_text = plate_cache[track_id]
-                        else:
-                            import re
-                            plate_crop = frame[y1 + int((y2-y1)*0.6):y2, x1:x2]
-                            if plate_crop.size > 0 and min(plate_crop.shape[:2]) > 15:
-                                try:
-                                    gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
-                                    gray = cv2.resize(gray, None, fx=2, fy=2)
-                                    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                                    ocr_res = ocr_reader.readtext(thresh, detail=1)
-                                    for (_, text, prob) in ocr_res:
-                                        cleaned = re.sub(r'[^A-Za-z0-9\-.]', '', text).upper()
-                                        if len(cleaned) >= 4 and prob > 0.3:
-                                            plate_text = cleaned
-                                            break
-                                except Exception: pass
-                            plate_cache[track_id] = plate_text
+                    # --- BIỂN SỐ OCR ("Khoe Khéo": chỉ kích hoạt khi xe VI PHẠM!) ---
+                    # Logic: YOLO detect xe → vi phạm? → YOLO detect biển số → crop → PaddleOCR
+                    # Không OCR tất cả xe → tiết kiệm tài nguyên GPU đáng kể!
+                    if check_plate_enabled and lp_detector and plate_reader_ocr and track_id is not None:
+                        # Sync conf từ sidebar slider (thủ công) → YOLO LP detector
+                        lp_detector.conf = conf_lp
+                        # Bước 1: Lấy từ cache trước (không bao giờ OCR lại cùng xe)
+                        cached_plate = plate_reader_ocr.get_cached_plate(track_id)
+                        if cached_plate:
+                            plate_text = cached_plate
+                        elif is_redlight_vio or is_helmet_vio:
+                            # Bước 2: CHỈ chạy khi xe đang vi phạm!
+                            vehicle_crop = frame[y1:y2, x1:x2]
+                            if vehicle_crop.size > 0 and min(vehicle_crop.shape[:2]) > 20:
+                                # Bước 2a: YOLO license_plate_detector.pt → detect bbox biển số
+                                plate_crop_img, plate_bbox = lp_detector.crop_best_plate(vehicle_crop)
+                                if plate_crop_img is not None and plate_crop_img.size > 0:
+                                    ph, pw = plate_crop_img.shape[:2]
+                                    print(f"[LP-DETECT] ID{track_id} frame#{frame_count}: Tìm thấy biển số → crop={pw}x{ph}px")
+                                    # Bước 2b: RapidOCR → đọc text biển số
+                                    plate_text = plate_reader_ocr.read_plate(plate_crop_img, track_id, min_score=conf_ocr)
+                                    if plate_text:
+                                        print(f"[OCR-OK]    ID{track_id}: ✅ Biển số = '{plate_text}'")
+                                    else:
+                                        print(f"[OCR-FAIL]  ID{track_id}: ❌ Không đọc được text (biển mờ/nhỏ/góc xấu)")
+                                else:
+                                    print(f"[LP-DETECT] ID{track_id} frame#{frame_count}: Không thấy biển số → fallback crop 35%")
+                                    # Fallback: crop thô phần dưới 35% xe nếu YOLO LP không thấy biển
+                                    fallback = vehicle_crop[int(vehicle_crop.shape[0] * 0.65):, :]
+                                    if fallback.size > 0:
+                                        plate_text = plate_reader_ocr.read_plate(fallback, track_id, min_score=conf_ocr)
+                                        if plate_text:
+                                            print(f"[OCR-OK]    ID{track_id}: ✅ Biển số (fallback) = '{plate_text}'")
+                                        else:
+                                            print(f"[OCR-FAIL]  ID{track_id}: ❌ Fallback cũng không đọc được")
+                            # Bước 3: Cập nhật cache + violations_log
                             if plate_text:
+                                plate_cache[track_id] = plate_text
                                 for v in violations_log:
                                     if v["track_id"] == track_id and not v["plate"]:
                                         v["plate"] = plate_text
@@ -622,7 +664,7 @@ if uploaded_file is not None:
             # Hiển thị
             st_frame.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
 
-            plates_found = sum(1 for v in plate_cache.values() if v)
+            plates_found = sum(1 for v in plate_reader_ocr.cache.values() if v) if plate_reader_ocr else len([v for v in plate_cache.values() if v])
             light_vn = {"red":"ĐỎ","green":"XANH","yellow":"VÀNG"}.get(current_light,"--")
             stop_status = "✅ Cố định" if global_stop_polygon is not None else "⏳ Chờ..."
             stats_ph.markdown(f"""
@@ -645,17 +687,25 @@ if uploaded_file is not None:
         st.markdown("---")
         st.header("📊 Tổng kết")
 
-        total_vio = len(redlight_memory) + len(helmet_violated_ids)
+        # Đếm từ violations_log (chính xác, không bị ảnh hưởng bởi cleanup redlight_memory)
+        redlight_count = sum(1 for v in violations_log if v["type"] == "Vượt đèn đỏ")
+        helmet_count   = len(helmet_violated_ids)
+        total_vio      = redlight_count + helmet_count
         c1, c2, c3 = st.columns(3)
-        with c1: st.metric("🔴 Vượt đèn đỏ", len(redlight_memory))
-        with c2: st.metric("🪖 Không mũ", len(helmet_violated_ids))
-        with c3: st.metric("⚠️ Tổng VP", total_vio)
+        with c1: st.metric("🔴 Vượt đèn đỏ", redlight_count)
+        with c2: st.metric("🪖 Không mũ",    helmet_count)
+        with c3: st.metric("⚠️ Tổng VP",     total_vio)
 
-        if total_vio > 0: st.success(f"Phát hiện **{total_vio}** vi phạm!")
+        if total_vio > 0: st.success(f"✅ Phát hiện **{total_vio}** vi phạm!")
         else: st.info("🎉 Không phát hiện vi phạm!")
 
         for v in violations_log:
             tid = v["track_id"]
+            # Ưu tiên PaddleOCR cache, fallback về plate_cache
+            if not v["plate"] and plate_reader_ocr:
+                cached = plate_reader_ocr.get_cached_plate(tid)
+                if cached:
+                    v["plate"] = cached
             if not v["plate"] and tid in plate_cache and plate_cache[tid]:
                 v["plate"] = plate_cache[tid]
 
@@ -702,7 +752,7 @@ if uploaded_file is not None:
             with col_json:
                 report = {
                     "date": datetime.now().isoformat(), "video": uploaded_file.name,
-                    "summary": {"redlight": len(violated_ids), "helmet": len(helmet_violated_ids), "total": total_vio},
+                    "summary": {"redlight": len(redlight_memory), "helmet": len(helmet_violated_ids), "total": total_vio},
                     "violations": [{k:v for k,v in item.items() if k != "evidence"} for item in violations_log]
                 }
                 st.download_button("📥 JSON", json.dumps(report, indent=2, ensure_ascii=False),

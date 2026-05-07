@@ -1,8 +1,25 @@
 streamlit>=1.30.0
 ultralytics>=8.3.237  # SAM3 requires ultralytics >= 8.3.237
-opencv-python>=4.8.0
-numpy>=1.24.0
-easyocr>=1.7.0
+opencv-python>=4.8.0,<4.11  # <4.11 để tương thích numpy<2 trong venv_paddle
+numpy>=1.24.0,<2             # numpy<2 để tương thích RapidOCR + paddlepaddle
+
+# ── OCR Biển số ──────────────────────────────────────────────────────────────
+# RapidOCR = model PaddleOCR chạy qua ONNX Runtime (chất lượng như PaddleOCR)
+# Không cần paddlepaddle → tránh dependency hell với Python 3.13
+rapidocr-onnxruntime>=1.3.0  # Cài trong venv_paddle (Python 3.10)
+easyocr>=1.7.0               # Fallback nếu không dùng venv_paddle
+
+# ── CÁCH CHẠY ĐÚNG (PaddleOCR-quality OCR): ─────────────────────────────────
+# Tạo venv Python 3.10 (1 lần duy nhất):
+#   py -3.10 -m venv venv_paddle
+#   .\venv_paddle\Scripts\pip install "numpy<2" "opencv-python>=4.8.0,<4.11"
+#   .\venv_paddle\Scripts\pip install rapidocr-onnxruntime
+#   .\venv_paddle\Scripts\pip install streamlit ultralytics easyocr scikit-image Pillow
+#
+# Chạy app:
+#   .\venv_paddle\Scripts\streamlit run app.py
+# ─────────────────────────────────────────────────────────────────────────────
+
 scikit-image>=0.21.0
 streamlit-drawable-canvas>=0.9.0
 Pillow>=9.0.0
