@@ -57,23 +57,34 @@ st.title("🚦 Hệ thống AI Giám sát Giao thông (ITS Pro)")
 st.caption("One-time Calibration (YOLO-BBox + SAM) + Real-time Detection")
 
 
+# ===== DEVICE SETUP =====
+# SAM2 (~160MB weights) → CPU để tránh OOM với VRAM 2GB
+# Các model YOLO nhỏ hơn → GPU nếu có
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+SAM_DEVICE = "cpu"   # SAM2 luôn chạy CPU để tiết kiệm VRAM
+print(f"🖥️ Inference device: YOLO={DEVICE.upper()}, SAM={SAM_DEVICE.upper()}")
+
 # ===== LOAD MODEL (cached) =====
 @st.cache_resource
 def load_model(path):
-    return YOLO(path)
+    model = YOLO(path)
+    model.to(DEVICE)
+    return model
 
 # Model đèn giao thông (chỉ detect đèn đỏ/xanh/vàng)
 light_model = load_model("models/phathienden.pt")          # Model đèn (chỉ đèn)
 vehicle_model = load_model("models/yolo11m.pt")            # Model xe: COCO
-helmet_model = load_model("models/phathienmu.pt")          # Model mũ
+helmet_model = load_model("models/phathienmu1.pt")         # Model mũ (v2)
 
 # === CALIBRATION MODELS (sẽ giải phóng sau frame đầu tiên) ===
 # Không dùng @st.cache_resource vì sẽ xóa khỏi RAM sau khi calibrate xong
 @st.cache_resource
 def load_calibration_models():
-    """Load YOLO-BBox vạch + SAM2 cho calibration. Sẽ giải phóng sau."""
-    yolo_line = YOLO("models/vachkeduongbbox1.pt")   # YOLO detect BBox vạch kẻ đường
-    sam2 = SAM("models/sam2_b.pt")                  # SAM2 segment chính xác theo góc camera
+    """Load YOLO-BBox vạch (GPU) + SAM2 (CPU) cho calibration. Sẽ giải phóng sau."""
+    yolo_line = YOLO("models/vachkeduongbbox1.pt")   # YOLO detect BBox vạch → GPU
+    yolo_line.to(DEVICE)
+    sam2 = SAM("models/sam2_b.pt")                  # SAM2 → CPU (tiết kiệm VRAM)
+    sam2.to(SAM_DEVICE)
     return yolo_line, sam2
 
 # ===== SIDEBAR =====
@@ -87,9 +98,15 @@ st.sidebar.header("🚧 Cài đặt Vạch Dừng (SAM)")
 st.sidebar.caption("Điều chỉnh cho giai đoạn Calibration (Frame 1)")
 conf_stop_line = st.sidebar.slider("Confidence: Vạch dừng (YOLO-BBox)", 0.1, 0.9, 0.3, 0.05,
     help="Ngưỡng tin cậy cho model detect vạch kẻ đường")
+min_width_pct = st.sidebar.slider(
+    "📐 Min width vạch (% frame)", 1, 40, 8, 1,
+    help="Vạch phải rộng ít nhất X% chiều ngang frame mới hợp lệ.\n"
+         "Video cũ (640px): ~20% | Video mới HD (1280px+): hạ xuống 5-10%\n"
+         "Mặc định 8% phù hợp cho cả hai loại video."
+)
 stop_line_extend_left = st.sidebar.slider("↔️ Mở rộng trái (px)", 0, 500, 150, 10,
     help="Kéo dài vạch dừng sang bên trái thêm bao nhiêu pixel")
-stop_line_offset_up = st.sidebar.slider("⬆️ Dịch vạch lên (px)", 0, 100, 20, 5,
+stop_line_offset_up = st.sidebar.slider("⬆️ Dịch vạch lên (px)", 0, 100, 30, 5,
     help="Dịch ngưỡng phát hiện lên trên N pixel so với cạnh trên của vạch, tránh false-positive")
 
 st.sidebar.markdown("---")
@@ -115,8 +132,18 @@ else:
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚡ Hiệu năng")
-process_every_n = st.sidebar.slider("Xử lý mỗi N frame", 1, 5, 1)
+process_every_n = st.sidebar.slider("Xử lý mỗi N frame (AI)", 1, 5, 1,
+    help="AI chạy mỗi N frame. Tăng lên = nhanh hơn nhưng bỏ sót xe nhanh")
 traffic_interval = st.sidebar.slider("Check đèn mỗi N frame", 1, 10, 3)
+display_every_n = st.sidebar.slider("🖥️ Cập nhật UI mỗi N frame", 1, 10, 2,
+    help="Chỉ vẽ lên màn hình mỗi N frame → giảm lag UI đáng kể.\n"
+         "Tăng cao = nhanh hơn nhưng video giật hơn.\n"
+         "Gợi ý: 2-3 cho video thường, 5-10 khi muốn tốc độ tối đa")
+display_width = st.sidebar.select_slider(
+    "📐 Độ rộng hiển thị (px)", options=[320, 480, 640, 800, 960, 1280], value=640,
+    help="Resize frame trước khi gửi lên UI → encode nhanh hơn.\n"
+         "Nhỏ hơn = nhanh hơn nhiều. Chất lượng AI không bị ảnh hưởng (AI chạy trên frame gốc)."
+)
 show_all = st.sidebar.checkbox("👁️ Hiện tất cả xe", value=True)
 
 # ===== BIỂN SỐ — YOLO LP Detector + RapidOCR =====
@@ -128,7 +155,7 @@ def load_plate_models_v2():
     Cache vĩnh viễn trong session (chỉ load 1 lần).
     Nếu bị lỗi stale cache: dừng app → chạy lại run.bat.
     """
-    lp_det = LicensePlateDetector("models/license_plate_detector.pt", conf=0.20)
+    lp_det = LicensePlateDetector("models/license_plate_detector.pt", conf=0.10, device=DEVICE)
     lp_ocr = PlateReader(use_gpu=True)
     return lp_det, lp_ocr
 
@@ -141,12 +168,15 @@ else:
 # Hàm OpenCV Fallback đã được gỡ bỏ theo yêu cầu
 
 
-def extract_stop_polygon_yolo(frame, yolo_line_model, sam2_model, light_bbox=None, conf=0.05, extend_left=100):
+def extract_stop_polygon_yolo(frame, yolo_line_model, sam2_model,
+                              light_bbox=None, conf=0.05, extend_left=100,
+                              min_width_pct: float = 8.0):
     """
     🎯 YOLO-BBox → SAM2 (với Y-clip) → Perspective-aware Polygon:
       1. Cắt ROI 60% dưới frame + CLAHE + YOLO predict.
-      2. Group detection theo Y-level gần đèn → fit đường thẳng lấy Y-strip.
-      3. SAM2 nhận BBox gộp → segment mask.
+      2. Lọc bbox: aspect ≥ 4 VÀ width ≥ min_width_pct% frame width.
+         (min_width_pct mặc định 8% — phù hợp cả video 640p lẫn 1080p+)
+      3. SAM2 nhận BBox tốt nhất → segment mask.
       4. CLIP mask vào đúng Y-strip của YOLO bbox → tránh flood-fill toàn mặt đường.
       5. Fit đường thẳng qua contour của mask → perspective polygon chính xác.
     """
@@ -157,6 +187,7 @@ def extract_stop_polygon_yolo(frame, yolo_line_model, sam2_model, light_bbox=Non
     roi_frame = frame[roi_top:, :]
     roi_h, roi_w = roi_frame.shape[:2]
     print(f"📌 ROI: cắt từ y={roi_top} xuống, kích thước={roi_w}x{roi_h}")
+    print(f"📐 Filter vạch: aspect≥4, width≥{min_width_pct:.0f}% ({roi_w * min_width_pct / 100:.0f}px)")
 
     # ── Bước 2: CLAHE ──
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -164,6 +195,7 @@ def extract_stop_polygon_yolo(frame, yolo_line_model, sam2_model, light_bbox=Non
     roi_enhanced = cv2.cvtColor(clahe.apply(gray), cv2.COLOR_GRAY2BGR)
 
     # ── Bước 3: YOLO-BBox predict ──
+    # imgsz=1024 phù hợp cho cả video nhỏ (640p) lẫn video lớn (1080p+)
     results = yolo_line_model.predict(roi_enhanced, conf=conf, imgsz=1024, verbose=False)
 
     raw_bboxes = []  # (full_frame_bbox, conf_val, bw)
@@ -180,8 +212,9 @@ def extract_stop_polygon_yolo(frame, yolo_line_model, sam2_model, light_bbox=Non
             if aspect < 4.0:
                 print(f"  ⏩ Bỏ box {i}: aspect={aspect:.1f} < 4.0")
                 continue
-            if bw < roi_w * 0.20:
-                print(f"  ⏩ Bỏ box {i}: width={bw:.0f}px < 20% frame")
+            min_width_px = roi_w * (min_width_pct / 100.0)
+            if bw < min_width_px:
+                print(f"  ⏩ Bỏ box {i}: width={bw:.0f}px < {min_width_pct:.0f}% frame ({min_width_px:.0f}px)")
                 continue
 
             fy1, fy2 = by1 + roi_top, by2 + roi_top
@@ -191,7 +224,8 @@ def extract_stop_polygon_yolo(frame, yolo_line_model, sam2_model, light_bbox=Non
                   f"full=[{bx1:.0f},{fy1:.0f},{bx2:.0f},{fy2:.0f}]")
 
     if not raw_bboxes:
-        print("⚠️ Không có vạch nào qua bộ lọc (aspect≥4 + width≥20%). Thử giảm Confidence.")
+        print(f"⚠️ Không có vạch nào qua bộ lọc (aspect≥4 + width≥{min_width_pct:.0f}%). "
+              f"Thử giảm Confidence hoặc giảm 'Min width vạch' trong sidebar.")
         return None, None
 
     print(f"✅ {len(raw_bboxes)} vạch hợp lệ sau filter")
@@ -225,7 +259,7 @@ def extract_stop_polygon_yolo(frame, yolo_line_model, sam2_model, light_bbox=Non
     # Prompt = chính xác bbox YOLO detect được (không mở rộng X to đùng để tránh SAM2 ngáo)
     # Y-clip sau để ngăn flood-fill xuống đường
     try:
-        sam_results = sam2_model.predict(frame, bboxes=[best_bb], verbose=False)
+        sam_results = sam2_model.predict(frame, bboxes=[best_bb], verbose=False, device=SAM_DEVICE)
 
         if sam_results and sam_results[0].masks is not None \
                 and len(sam_results[0].masks.data) > 0:
@@ -417,7 +451,8 @@ if uploaded_file is not None:
             result = extract_stop_polygon_yolo(
                 calib_frame, yolo_line_model, sam2_model,
                 light_bbox=light_bbox_for_calib, conf=conf_stop_line,
-                extend_left=stop_line_extend_left
+                extend_left=stop_line_extend_left,
+                min_width_pct=min_width_pct,
             )
 
             if result[0] is not None:
@@ -573,26 +608,38 @@ if uploaded_file is not None:
                                 })
 
                     # --- KIỂM TRA MŨ BẢO HIỂM ---
-                    if check_helmet_enabled and cls_id == MOTORBIKE_CLASS and track_id is not None:
-                        if track_id in helmet_violated_ids:
+                    if check_helmet_enabled and cls_id == MOTORBIKE_CLASS:
+                        if track_id is not None and track_id in helmet_violated_ids:
                             is_helmet_vio = True
                         else:
                             crop = frame[y1:y2, x1:x2]
                             if crop.size > 0 and min(crop.shape[:2]) > 15:
                                 h_res = helmet_model.predict(crop, conf=conf_helmet, verbose=False)
                                 for hr in h_res:
+                                    # Debug: in tên các class model detect được (chỉ in 1 lần đầu)
+                                    if frame_count <= 30 and processed_count <= 5:
+                                        detected_cls = [f"{hr.names[int(b.cls[0])]}({float(b.conf[0]):.2f})" for b in hr.boxes]
+                                        if detected_cls:
+                                            print(f"[HELMET-DBG] frame#{frame_count} ID{track_id}: {detected_cls}")
+                                        else:
+                                            print(f"[HELMET-DBG] frame#{frame_count} ID{track_id}: không detect được class nào (crop={crop.shape[1]}x{crop.shape[0]}px)")
                                     for b in hr.boxes:
-                                        if hr.names[int(b.cls[0])] == 'Without Helmet':
+                                        cls_name_h = hr.names[int(b.cls[0])]
+                                        # Hỗ trợ nhiều tên class phổ biến
+                                        if cls_name_h.lower() in ('without helmet', 'without_helmet', 'no_helmet', 'nohelmet', 'no helmet'):
                                             is_helmet_vio = True
-                                            helmet_violated_ids.add(track_id)
+                                            if track_id is not None:
+                                                helmet_violated_ids.add(track_id)
                                             ev = os.path.join(evidence_dir, f"helmet_ID{track_id}_f{frame_count}.jpg")
                                             cv2.imwrite(ev, frame)
-                                            violations_log.append({
-                                                "time": round(frame_count / max(fps,1), 2),
-                                                "frame": frame_count, "type": "Không đội mũ",
-                                                "vehicle": VN_NAMES.get(cls_id, class_name),
-                                                "track_id": track_id, "plate": "", "evidence": ev
-                                            })
+                                            if track_id not in [v['track_id'] for v in violations_log if v['type'] == 'Không đội mũ']:
+                                                violations_log.append({
+                                                    "time": round(frame_count / max(fps,1), 2),
+                                                    "frame": frame_count, "type": "Không đội mũ",
+                                                    "vehicle": VN_NAMES.get(cls_id, class_name),
+                                                    "track_id": track_id, "plate": "", "evidence": ev
+                                                })
+                                            print(f"[HELMET-VIO] frame#{frame_count} ID{track_id}: '{cls_name_h}' → VI PHẠM KHÔNG ĐỘI MŨ!")
                                             break
                                     if is_helmet_vio: break
 
@@ -661,8 +708,16 @@ if uploaded_file is not None:
             # --- VẼ HUD (KHÔNG vẽ stop line trên video live) ---
             draw_light_status(frame, current_light)
 
-            # Hiển thị
-            st_frame.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
+            # Hiển thị — chỉ cập nhật UI mỗi display_every_n frame để giảm lag
+            if frame_count % display_every_n == 0:
+                disp = frame
+                # Resize nhỏ lại nếu cần → encode PNG nhanh hơn rất nhiều
+                if disp.shape[1] > display_width:
+                    scale = display_width / disp.shape[1]
+                    disp = cv2.resize(disp, (display_width, int(disp.shape[0] * scale)),
+                                      interpolation=cv2.INTER_LINEAR)
+                st_frame.image(cv2.cvtColor(disp, cv2.COLOR_BGR2RGB),
+                               channels="RGB", use_container_width=True)
 
             plates_found = sum(1 for v in plate_reader_ocr.cache.values() if v) if plate_reader_ocr else len([v for v in plate_cache.values() if v])
             light_vn = {"red":"ĐỎ","green":"XANH","yellow":"VÀNG"}.get(current_light,"--")

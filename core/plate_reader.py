@@ -52,10 +52,12 @@ class LicensePlateDetector:
     Chính xác hơn crop thô: detect đúng bbox dù xe nghiêng/xa/khác góc.
     """
 
-    def __init__(self, model_path: str = "models/license_plate_detector.pt", conf: float = 0.20):
+    def __init__(self, model_path: str = "models/license_plate_detector.pt", conf: float = 0.20, device: str = "cpu"):
         self.model = YOLO(model_path)
+        self.model.to(device)
         self.conf = conf
-        print(f"[OK] LicensePlateDetector loaded: {model_path}")
+        self.device = device
+        print(f"[OK] LicensePlateDetector loaded: {model_path} [{device.upper()}]")
 
     def detect(self, vehicle_crop: np.ndarray) -> list:
         """
@@ -71,7 +73,7 @@ class LicensePlateDetector:
         if h < 20 or w < 20:
             return []
 
-        results = self.model.predict(vehicle_crop, conf=self.conf, verbose=False)
+        results = self.model.predict(vehicle_crop, conf=self.conf, verbose=False, device=self.device)
         plates = []
         for r in results:
             if r.boxes is None or len(r.boxes) == 0:
