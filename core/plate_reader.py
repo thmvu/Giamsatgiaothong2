@@ -73,7 +73,8 @@ class LicensePlateDetector:
         if h < 20 or w < 20:
             return []
 
-        results = self.model.predict(vehicle_crop, conf=self.conf, verbose=False, device=self.device)
+        # imgsz=320: crop xe thường nhỏ (200~300px) → 320 là đủ, nhanh hơn 640 ~2x
+        results = self.model.predict(vehicle_crop, conf=self.conf, imgsz=320, verbose=False, device=self.device)
         plates = []
         for r in results:
             if r.boxes is None or len(r.boxes) == 0:
@@ -133,12 +134,20 @@ class PlateReader:
 
         # ── Thử RapidOCR trước (model PaddleOCR + ONNX) ──
         if RAPIDOCR_AVAILABLE:
+            # Thử bật GPU trước (cần onnxruntime-gpu)
+            if use_gpu:
+                try:
+                    self._ocr = RapidOCR(det_use_cuda=True, rec_use_cuda=True, cls_use_cuda=True)
+                    self._engine = "rapidocr"
+                    print("[OK] RapidOCR (PaddleOCR model + ONNX) — GPU mode 🚀")
+                    return
+                except Exception as e:
+                    print(f"[INFO] RapidOCR GPU không khả dụng ({e}) → fallback CPU")
+            # Fallback CPU (không cần onnxruntime-gpu)
             try:
-                # RapidOCR tự động dùng ONNX Runtime
-                # GPU: cài thêm onnxruntime-gpu và đặt use_cuda=True
                 self._ocr = RapidOCR()
                 self._engine = "rapidocr"
-                print("[OK] RapidOCR (PaddleOCR model + ONNX) khởi tạo thành công 🚀")
+                print("[OK] RapidOCR (PaddleOCR model + ONNX) — CPU mode")
                 return
             except Exception as e:
                 print(f"[WARNING] RapidOCR init thất bại: {e} → thử EasyOCR")
@@ -215,16 +224,23 @@ class PlateReader:
         for item in result:
             # item = [bbox_pts, text, score]
             if len(item) >= 3:
+                bbox_pts = item[0]   # [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]
                 raw_text = str(item[1])
                 score = float(item[2]) if item[2] is not None else 0.0
                 cleaned = self._clean_text(raw_text)
                 if len(cleaned) >= 3 and score > min_score:
-                    texts.append((cleaned, score))
+                    # Lấy tọa độ Y trung bình của bbox → sort dòng trên trước
+                    try:
+                        y_center = float(np.mean([pt[1] for pt in bbox_pts]))
+                    except Exception:
+                        y_center = 0.0
+                    texts.append((cleaned, score, y_center))
 
         if not texts:
             return ""
-        # Biển 2 dòng: ghép dòng dài nhất lên trước
-        texts.sort(key=lambda t: len(t[0]), reverse=True)
+        # Biển VN: dòng trên (Y nhỏ hơn) = mã tỉnh "51F", dòng dưới = số "12345"
+        # → sort theo Y tăng dần (trên trước) thay vì độ dài
+        texts.sort(key=lambda t: t[2])
         return '-'.join(t[0] for t in texts[:2])
 
     def _read_easyocr(self, img: np.ndarray, min_score: float = 0.5) -> str:

@@ -1,7 +1,7 @@
 """
 Helmet Checker Module
 =====================
-Sử dụng model phathienmu.pt để kiểm tra mũ bảo hiểm
+Sử dụng model phathienmu1.pt để kiểm tra mũ bảo hiểm
 trên ảnh crop xe máy.
 Classes: With Helmet, Without Helmet
 """
@@ -16,7 +16,7 @@ class HelmetChecker:
     Nhận ảnh crop xe máy → trả về có vi phạm hay không.
     """
 
-    def __init__(self, model_path: str = "phathienmu.pt"):
+    def __init__(self, model_path: str = "models/phathienmu1.pt"):
         self.model = YOLO(model_path)
 
     def check(self, crop_img: np.ndarray, conf: float = 0.4) -> bool:
@@ -42,7 +42,8 @@ class HelmetChecker:
                 continue
             for b in res.boxes:
                 label = res.names[int(b.cls[0])]
-                if label == "Without Helmet":
+                # Hỗ trợ nhiều tên class phổ biến từ các bộ dataset khác nhau
+                if label.lower() in ('without helmet', 'without_helmet', 'no_helmet', 'nohelmet', 'no helmet'):
                     return True
 
         return False

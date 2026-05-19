@@ -69,6 +69,9 @@ print(f"🖥️ Inference device: YOLO={DEVICE.upper()}, SAM={SAM_DEVICE.upper()
 def load_model(path):
     model = YOLO(path)
     model.to(DEVICE)
+    # FP16 trên CUDA → giảm ~50% VRAM, tăng tốc đáng kể trên GPU yếu
+    if DEVICE == "cuda":
+        model.half()
     return model
 
 # Model đèn giao thông (chỉ detect đèn đỏ/xanh/vàng)
@@ -132,17 +135,27 @@ else:
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚡ Hiệu năng")
-process_every_n = st.sidebar.slider("Xử lý mỗi N frame (AI)", 1, 5, 1,
-    help="AI chạy mỗi N frame. Tăng lên = nhanh hơn nhưng bỏ sót xe nhanh")
-traffic_interval = st.sidebar.slider("Check đèn mỗi N frame", 1, 10, 3)
-display_every_n = st.sidebar.slider("🖥️ Cập nhật UI mỗi N frame", 1, 10, 2,
+st.sidebar.caption("🐢 GPU yếu (MX110/GT): dùng N=2~3, UI=3~5, imgsz=640")
+process_every_n = st.sidebar.slider("Xử lý mỗi N frame (AI)", 1, 5, 2,
+    help="AI chạy mỗi N frame. Tăng lên = nhanh hơn nhưng bỏ sót xe nhanh\n"
+         "GPU yếu: dùng 2-3 | GPU mạnh: 1")
+traffic_interval = st.sidebar.slider("Check đèn mỗi N frame", 1, 10, 5,
+    help="Đèn thay đổi chậm → không cần check mỗi frame. GPU yếu: 5-10")
+display_every_n = st.sidebar.slider("🖥️ Cập nhật UI mỗi N frame", 1, 10, 3,
     help="Chỉ vẽ lên màn hình mỗi N frame → giảm lag UI đáng kể.\n"
          "Tăng cao = nhanh hơn nhưng video giật hơn.\n"
-         "Gợi ý: 2-3 cho video thường, 5-10 khi muốn tốc độ tối đa")
+         "GPU yếu: 3-5 | Muốn tốc độ tối đa: 8-10")
 display_width = st.sidebar.select_slider(
     "📐 Độ rộng hiển thị (px)", options=[320, 480, 640, 800, 960, 1280], value=640,
     help="Resize frame trước khi gửi lên UI → encode nhanh hơn.\n"
-         "Nhỏ hơn = nhanh hơn nhiều. Chất lượng AI không bị ảnh hưởng (AI chạy trên frame gốc)."
+         "Nhỏ hơn = nhanh hơn nhiều. Chất lượng AI không bị ảnh hưởng (AI chạy trên frame gốc).\n"
+         "GPU yếu: 480-640 | Máy mạnh: 960-1280"
+)
+yolo_imgsz = st.sidebar.select_slider(
+    "🔍 YOLO imgsz (inference)", options=[320, 480, 640, 960, 1280], value=640,
+    help="Kích thước ảnh đưa vào YOLO khi inference (KHÔNG phải training).\n"
+         "Nhỏ hơn = nhanh hơn nhiều, hơi giảm accuracy với vật thể nhỏ.\n"
+         "GPU yếu (MX110): 480-640 | GPU mạnh: 960-1280"
 )
 show_all = st.sidebar.checkbox("👁️ Hiện tất cả xe", value=True)
 
@@ -523,7 +536,7 @@ if uploaded_file is not None:
 
             # --- NHẬN DIỆN ĐÈN GIAO THÔNG (Mỗi N frame) ---
             if processed_count % traffic_interval == 1 or traffic_interval == 1:
-                light_results = light_model(frame, conf=conf_light, verbose=False)
+                light_results = light_model(frame, conf=conf_light, imgsz=yolo_imgsz, verbose=False)
                 
                 best_light_conf = 0
                 temp_light = "unknown"
@@ -564,7 +577,8 @@ if uploaded_file is not None:
             # --- NHẬN DIỆN PHƯƠNG TIỆN + TRACKING ---
             vehicle_results = vehicle_model.track(
                 frame, conf=conf_vehicle, classes=VEHICLE_CLASSES,
-                persist=True, tracker="bytetrack.yaml", verbose=False
+                persist=True, tracker="bytetrack.yaml",
+                imgsz=yolo_imgsz, verbose=False
             )
 
             for r in vehicle_results:
@@ -614,7 +628,7 @@ if uploaded_file is not None:
                         else:
                             crop = frame[y1:y2, x1:x2]
                             if crop.size > 0 and min(crop.shape[:2]) > 15:
-                                h_res = helmet_model.predict(crop, conf=conf_helmet, verbose=False)
+                                h_res = helmet_model.predict(crop, conf=conf_helmet, imgsz=320, verbose=False)
                                 for hr in h_res:
                                     # Debug: in tên các class model detect được (chỉ in 1 lần đầu)
                                     if frame_count <= 30 and processed_count <= 5:
