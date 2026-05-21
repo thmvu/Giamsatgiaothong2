@@ -129,9 +129,30 @@ if check_plate_enabled:
         "OCR Score — ngưỡng chấp nhận", 0.30, 0.90, 0.50, 0.05,
         help="Chỉ giữ kết quả OCR có score cao hơn ngưỡng này.\nGiảm = chấp nhận cả kết quả mờ\nTăng = chỉ giữ kết quả rất chắc chắn"
     )
+    lp_model_path = st.sidebar.selectbox(
+        "🧠 Model biển số",
+        options=[
+            "models/license_plate_detector.pt",
+            "models/biensoxe.onnx",
+            "models/best.onnx",
+        ],
+        index=0,
+        help="Chọn model YOLO phát hiện biển số.\n"
+             "license_plate_detector.pt: nhẹ (6MB), nhanh\n"
+             "biensoxe.onnx / best.onnx: nặng hơn (80MB), chính xác hơn, dùng với imgsz=1024"
+    )
+    lp_imgsz = st.sidebar.select_slider(
+        "🔍 LP YOLO imgsz", options=[320, 640, 1024], value=640,
+        help="Kích thước inference cho YOLO biển số.\n"
+             "320 = rất nhanh, chất lượng ổn\n"
+             "640 = cân bằng (default cho MX110)\n"
+             "1024 = cực chính xác, dùng với best.onnx (cần máy mạnh hơn)"
+    )
 else:
     conf_lp  = 0.20
     conf_ocr = 0.50
+    lp_model_path = "models/license_plate_detector.pt"
+    lp_imgsz = 640
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚡ Hiệu năng")
@@ -160,20 +181,26 @@ yolo_imgsz = st.sidebar.select_slider(
 show_all = st.sidebar.checkbox("👁️ Hiện tất cả xe", value=True)
 
 # ===== BIỂN SỐ — YOLO LP Detector + RapidOCR =====
-# Thêm _v2 vào tên hàm để force Streamlit reload cache khi code thay đổi
 @st.cache_resource
-def load_plate_models_v2():
+def load_plate_models_v3(model_path: str, imgsz: int):
     """
     Load YOLO biển số + RapidOCR (PaddleOCR model qua ONNX).
-    Cache vĩnh viễn trong session (chỉ load 1 lần).
-    Nếu bị lỗi stale cache: dừng app → chạy lại run.bat.
+    Cache theo (model_path, imgsz) — tự reload khi đổi model/imgsz.
+    Hỗ trợ: license_plate_detector.pt | biensoxe.onnx | best.onnx
     """
-    lp_det = LicensePlateDetector("models/license_plate_detector.pt", conf=0.10, device=DEVICE)
-    lp_ocr = PlateReader(use_gpu=True)
+    import os
+    if not os.path.exists(model_path):
+        st.warning(f"⚠️ Không tìm thấy {model_path} — fallback license_plate_detector.pt")
+        model_path = "models/license_plate_detector.pt"
+    lp_det = LicensePlateDetector(model_path, conf=0.10, device=DEVICE, imgsz=imgsz)
+    lp_ocr = PlateReader(use_gpu=False)
     return lp_det, lp_ocr
 
 if check_plate_enabled:
-    lp_detector, plate_reader_ocr = load_plate_models_v2()
+    lp_detector, plate_reader_ocr = load_plate_models_v3(lp_model_path, lp_imgsz)
+    # Sync conf và imgsz từ slider (có thể thay đổi giữa các lần chạy)
+    lp_detector.conf  = conf_lp
+    lp_detector.imgsz = lp_imgsz
 else:
     lp_detector, plate_reader_ocr = None, None
 
@@ -657,9 +684,7 @@ if uploaded_file is not None:
                                             break
                                     if is_helmet_vio: break
 
-                    # --- BIỂN SỐ OCR ("Khoe Khéo": chỉ kích hoạt khi xe VI PHẠM!) ---
-                    # Logic: YOLO detect xe → vi phạm? → YOLO detect biển số → crop → PaddleOCR
-                    # Không OCR tất cả xe → tiết kiệm tài nguyên GPU đáng kể!
+                    # --- BIỂN SỐ OCR: Chạy NGAY cho TẤT CẢ các xe khi phát hiện ---
                     if check_plate_enabled and lp_detector and plate_reader_ocr and track_id is not None:
                         # Sync conf từ sidebar slider (thủ công) → YOLO LP detector
                         lp_detector.conf = conf_lp
@@ -667,8 +692,8 @@ if uploaded_file is not None:
                         cached_plate = plate_reader_ocr.get_cached_plate(track_id)
                         if cached_plate:
                             plate_text = cached_plate
-                        elif is_redlight_vio or is_helmet_vio:
-                            # Bước 2: CHỈ chạy khi xe đang vi phạm!
+                        else:
+                            # Bước 2: Chạy phát hiện biển số và OCR ngay cho xe này
                             vehicle_crop = frame[y1:y2, x1:x2]
                             if vehicle_crop.size > 0 and min(vehicle_crop.shape[:2]) > 20:
                                 # Bước 2a: YOLO license_plate_detector.pt → detect bbox biển số
@@ -692,12 +717,16 @@ if uploaded_file is not None:
                                             print(f"[OCR-OK]    ID{track_id}: ✅ Biển số (fallback) = '{plate_text}'")
                                         else:
                                             print(f"[OCR-FAIL]  ID{track_id}: ❌ Fallback cũng không đọc được")
-                            # Bước 3: Cập nhật cache + violations_log
+                            
+                            # Cập nhật cache
                             if plate_text:
                                 plate_cache[track_id] = plate_text
-                                for v in violations_log:
-                                    if v["track_id"] == track_id and not v["plate"]:
-                                        v["plate"] = plate_text
+
+                        # Bước 3: Cập nhật violations_log cho các vi phạm trước đó của xe này
+                        if plate_text:
+                            for v in violations_log:
+                                if v["track_id"] == track_id and not v["plate"]:
+                                    v["plate"] = plate_text
 
                     # --- VẼ KẾT QUẢ ---
                     has_violation = is_redlight_vio or is_helmet_vio

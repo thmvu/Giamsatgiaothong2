@@ -1,0 +1,43 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #07111f;
+  --surface: #0d1828;
+  --card: #102033;
+  --border: #284059;
+  --border-strong: #5f7892;
+  --accent: #38bdf8;
+  --accent-strong: #0284c7;
+  --accent2: #0f766e;
+  --red: #ef4444;
+  --green: #10b981;
+  --yellow: #f59e0b;
+  --text: #e5eef8;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --radius: 12px;
+}
+
+html, body, #root {
+  min-height: 100%;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(14, 165, 233, 0.14), transparent 25%),
+    linear-gradient(180deg, #081220 0%, #060d18 100%);
+  color: var(--text);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: var(--surface); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* Animations */
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+@keyframes slideIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+@keyframes glow { 0%,100%{box-shadow:0 0 8px rgba(0,212,255,.3)} 50%{box-shadow:0 0 20px rgba(0,212,255,.6)} }
