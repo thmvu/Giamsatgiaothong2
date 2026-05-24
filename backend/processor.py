@@ -217,6 +217,10 @@ class VideoProcessor:
         if not self.lp_detector or not track_id:
             return "", None, None
 
+        # Dừng ngay nếu đã bị cancel
+        if self._stopped:
+            return "", None, None
+
         self.lp_detector.conf = conf_lp
 
         # Cache hit — không detect lại
@@ -363,6 +367,7 @@ class VideoProcessor:
             calib_frames.append(f2); frame_count += 1
 
         for idx, cf in enumerate(calib_frames):
+            if self._stopped: break
             prog(0.5 + 0.2*idx/5, f"🎯 Frame {idx+1}/{len(calib_frames)}...")
             poly, _ = self._extract_stop_polygon(cf, yolo_line, sam2, light_bbox_c)
             if poly is not None:
@@ -397,6 +402,7 @@ class VideoProcessor:
         while cap.isOpened() and not self._stopped:
             ret, frame = cap.read()
             if not ret: break
+            if self._stopped: break
             frame_count += 1
             if frame_count % cfg.process_every_n != 0: continue
             processed += 1
@@ -420,6 +426,7 @@ class VideoProcessor:
                             draw_box(frame, [x1,y1,x2,y2], f"Light({current_light}) {cv2_val:.2f}", col)
 
             # Xe
+            if self._stopped: break
             veh_res = self.vehicle_model.track(
                 frame, conf=cfg.conf_vehicle, classes=self.VEHICLE_CLASSES,
                 persist=True, tracker="bytetrack.yaml", imgsz=cfg.yolo_imgsz, verbose=False
@@ -427,11 +434,16 @@ class VideoProcessor:
             cur_ids = set()
             for r in veh_res:
                 if r.boxes is None or len(r.boxes) == 0: continue
-                for i in range(len(r.boxes)):
-                    bbox = r.boxes.xyxy[i].tolist()
-                    x1,y1,x2,y2 = map(int, bbox)
-                    cls_id = int(r.boxes.cls[i])
-                    track_id = int(r.boxes.id[i]) if r.boxes.id is not None else None
+                # Chuyển đổi toàn bộ tensor sang danh sách CPU một lần duy nhất để tối ưu hiệu năng tối đa (không nghẽn CUDA sync)
+                boxes_list = r.boxes.xyxy.int().cpu().tolist()
+                clss_list = r.boxes.cls.int().cpu().tolist()
+                ids_list = r.boxes.id.int().cpu().tolist() if r.boxes.id is not None else [None] * len(boxes_list)
+
+                for i in range(len(boxes_list)):
+                    bbox = boxes_list[i]
+                    x1, y1, x2, y2 = bbox
+                    cls_id = clss_list[i]
+                    track_id = ids_list[i]
                     if track_id: cur_ids.add(track_id)
                     cls_name = self.VN_NAMES.get(cls_id, self.vehicle_model.names[cls_id])
 
@@ -466,7 +478,7 @@ class VideoProcessor:
                     # ── Bước 3: OCR biển số — chạy cho xe vi phạm hoặc tất cả xe nếu bật show_all ──
                     plate_bbox_in_frame = None
                     plate_crop_path = None
-                    should_read_plate = cfg.check_plate and track_id and ((is_rl or is_hm) or cfg.show_all)
+                    should_read_plate = (not self._stopped) and cfg.check_plate and track_id and ((is_rl or is_hm) or cfg.show_all)
                     if should_read_plate:
                         plate_text, plate_bbox_in_frame, plate_crop_path = self._try_read_plate(
                             frame, x1, y1, x2, y2, track_id,
@@ -540,7 +552,8 @@ class VideoProcessor:
 
 
 
-            cleanup_violation_memory(redlight_memory, cur_ids)
+            # Không dọn dẹp redlight_memory quá gắt để tránh trùng lặp vi phạm khi mất track tạm thời
+            # cleanup_violation_memory(redlight_memory, cur_ids)
             draw_light_status(frame, current_light)
 
             if cfg.display_every_n > 1 and frame_count % cfg.display_every_n != 0:
@@ -567,6 +580,9 @@ class VideoProcessor:
             on_frame(self._encode(out_frame), stats)
 
         cap.release()
+        if self._stopped:
+            print("[PROCESSOR] ⏹️ Đã dừng theo yêu cầu người dùng.")
+            return
         summary = {
             "total_frames": frame_count,
             "violations": violations_log,

@@ -115,39 +115,55 @@ async def websocket_stream(ws: WebSocket, session_id: str):
         await ws.close()
         return
 
-    def _put(frame_bytes, stats):
-        """Thread-safe put into asyncio queue. Drop frame if queue full."""
-        fut = asyncio.run_coroutine_threadsafe(_safe_put(queue, frame_bytes, stats), loop)
+    def _safe_run(coro):
+        """Gửi coroutine lên asyncio event loop từ thread nền.
+        Nếu loop đã đóng hoặc WebSocket đã ngắt → đóng coroutine tường minh
+        để tránh RuntimeWarning 'coroutine was never awaited'.
+        """
+        if loop.is_closed():
+            coro.close()
+            return
         try:
+            fut = asyncio.run_coroutine_threadsafe(coro, loop)
             fut.result(timeout=3)
         except Exception:
-            pass  # Drop frame rather than block
+            # Đóng coroutine nếu chưa được consume để tránh warning
+            try:
+                coro.close()
+            except Exception:
+                pass
+
+    def _put(frame_bytes, stats):
+        """Thread-safe put into asyncio queue. Drop frame if queue full."""
+        if loop.is_closed():
+            return
+        coro = _safe_put(queue, frame_bytes, stats)
+        try:
+            fut = asyncio.run_coroutine_threadsafe(coro, loop)
+            fut.result(timeout=3)
+        except Exception:
+            try:
+                coro.close()
+            except Exception:
+                pass
 
     def _on_calib(calib_bytes):
         session["calib_frame"] = calib_bytes
-        asyncio.run_coroutine_threadsafe(
-            ws.send_json({"type": "calib", "data": list(calib_bytes)}), loop
-        )
+        _safe_run(ws.send_json({"type": "calib", "data": list(calib_bytes)}))
 
     def _on_violation(vio):
         session["violations"].append(vio)
-        asyncio.run_coroutine_threadsafe(
-            ws.send_json({"type": "violation", "data": vio}), loop
-        )
+        _safe_run(ws.send_json({"type": "violation", "data": vio}))
 
     def _on_progress(pct, msg):
         session["progress"] = pct
         session["progress_msg"] = msg
-        asyncio.run_coroutine_threadsafe(
-            ws.send_json({"type": "progress", "pct": pct, "msg": msg}), loop
-        )
+        _safe_run(ws.send_json({"type": "progress", "pct": pct, "msg": msg}))
 
     def _on_done(summary):
         session["status"] = "done"
         session["summary"] = summary
-        asyncio.run_coroutine_threadsafe(
-            ws.send_json({"type": "done", "summary": summary}), loop
-        )
+        _safe_run(ws.send_json({"type": "done", "summary": summary}))
 
     def _on_plate_update(info):
         """Gửi cập nhật biển số muộn cho frontend."""
@@ -155,9 +171,7 @@ async def websocket_stream(ws: WebSocket, session_id: str):
         for v in session["violations"]:
             if v["track_id"] == info["track_id"] and not v["plate"]:
                 v["plate"] = info["plate"]
-        asyncio.run_coroutine_threadsafe(
-            ws.send_json({"type": "plate_update", "data": info}), loop
-        )
+        _safe_run(ws.send_json({"type": "plate_update", "data": info}))
 
     # Run AI in background thread
     future = executor.submit(
