@@ -25,3 +25,8 @@ streamlit-drawable-canvas>=0.9.0
 Pillow>=9.0.0
 prefetch_generator>=1.0.3
 yacs>=0.1.8
+
+# ── Kết nối Database ────────────────────────────────────────────────────────
+motor>=3.3.0
+python-dotenv>=1.0.0
+

@@ -1,7 +1,13 @@
-sam2_b.pt
+# Môi trường Python
 venv_paddle/
 venv/
 .venv/
+
+# Bảo mật — KHÔNG được commit lên Git!
+.env
+
+# Trọng số mô hình nặng
+sam2_b.pt
 
 
 *.onnx
@@ -15,3 +21,7 @@ videos_test/
 *.jpeg
 *.png
 *.csv
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/

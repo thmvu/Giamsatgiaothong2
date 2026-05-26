@@ -14,6 +14,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from dotenv import load_dotenv
+load_dotenv()
+
+from backend import database
 from backend.processor import VideoProcessor, ProcessorConfig
 
 # ── App setup ─────────────────────────────────────────────────────────────────
@@ -24,6 +28,10 @@ os.makedirs("evidence", exist_ok=True)
 os.makedirs(os.path.join("evidence", "plates"), exist_ok=True)
 app.mount("/static/evidence", StaticFiles(directory="evidence"), name="evidence")
 executor = ThreadPoolExecutor(max_workers=2)
+
+@app.on_event("startup")
+async def startup_event():
+    database.init_db()
 
 # CORS: cho phép React (port 3000) gọi FastAPI (port 8000) trong dev mode
 app.add_middleware(
@@ -159,6 +167,8 @@ async def websocket_stream(ws: WebSocket, session_id: str):
 
     def _on_violation(vio):
         session["violations"].append(vio)
+        # Luu bat dong bo vao database (motor async)
+        asyncio.run_coroutine_threadsafe(database.save_violation(vio), loop)
         _safe_run(ws.send_json({"type": "violation", "data": vio}))
 
     def _on_progress(pct, msg):
@@ -177,6 +187,16 @@ async def websocket_stream(ws: WebSocket, session_id: str):
         for v in session["violations"]:
             if v["track_id"] == info["track_id"] and not v["plate"]:
                 v["plate"] = info["plate"]
+        # Cap nhat bat dong bo vao database (motor async)
+        asyncio.run_coroutine_threadsafe(
+            database.update_violation_plate(
+                track_id=info["track_id"],
+                plate_text=info["plate"],
+                crop_path=info.get("crop_path"),
+                bbox=info.get("bbox")
+            ),
+            loop
+        )
         _safe_run(ws.send_json({"type": "plate_update", "data": info}))
 
     # Run AI in background thread
@@ -252,3 +272,38 @@ async def delete_session(session_id: str):
         try: os.unlink(session["video_path"])
         except: pass
     return {"ok": True}
+
+
+# ── MongoDB API Endpoints ───────────────────────────────────────────────────
+
+@app.get("/api/db/violations")
+async def get_db_violations(page: int = 1, limit: int = 10, search: str = "", 
+                            type: str = "", status: str = ""):
+    """Lấy danh sách vi phạm phân trang, tìm kiếm và lọc từ database"""
+    records, total = await database.get_violations(
+        page=page, limit=limit, search=search, v_type=type, status=status
+    )
+    return {
+        "violations": records,
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
+
+@app.patch("/api/db/violations/{violation_id}/status")
+async def update_db_violation_status(violation_id: str, payload: dict):
+    """Cập nhật trạng thái xử lý phạt nguội"""
+    new_status = payload.get("status")
+    if not new_status:
+        return JSONResponse({"error": "Status is required"}, status_code=400)
+    
+    ok = await database.update_violation_status(violation_id, new_status)
+    if not ok:
+        return JSONResponse({"error": "Violation not found or status invalid"}, status_code=404)
+    return {"ok": True, "id": violation_id, "status": new_status}
+
+@app.get("/api/db/stats")
+async def get_db_stats():
+    """Lấy tổng hợp số liệu thống kê để hiển thị biểu đồ"""
+    stats = await database.get_violation_stats()
+    return stats

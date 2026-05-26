@@ -5,6 +5,7 @@ import StatsBar from './components/StatsBar'
 import ViolationPanel from './components/ViolationPanel'
 import ProgressBar from './components/ProgressBar'
 import Header from './components/Header'
+import HistoryPanel from './components/HistoryPanel'
 import './App.css'
 
 const API = ''
@@ -18,6 +19,7 @@ const toEvidenceUrl = (p) => {
 }
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState('monitor')
   const [sessionId, setSessionId] = useState(null)
   const [status, setStatus] = useState('idle')
   const [progress, setProgress] = useState({ pct: 0, msg: 'Chọn video để bắt đầu' })
@@ -181,16 +183,20 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-slate-50">
-      <Header status={status} />
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        <UploadPanel onStart={handleStart} onStop={handleStop} status={status} />
-        <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          <ProgressBar progress={progress} />
-          <VideoStream canvasRef={canvasRef} status={status} calibImg={calibImg} logs={logs} />
-          <StatsBar stats={stats} />
+      <Header status={status} activeTab={activeTab} setActiveTab={setActiveTab} />
+      {activeTab === 'monitor' ? (
+        <div className="flex flex-1 min-h-0 overflow-hidden">
+          <UploadPanel onStart={handleStart} onStop={handleStop} status={status} />
+          <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+            <ProgressBar progress={progress} />
+            <VideoStream canvasRef={canvasRef} status={status} calibImg={calibImg} logs={logs} />
+            <StatsBar stats={stats} />
+          </div>
+          <ViolationPanel violations={violations} />
         </div>
-        <ViolationPanel violations={violations} />
-      </div>
+      ) : (
+        <HistoryPanel />
+      )}
     </div>
   )
 }
