@@ -9,6 +9,14 @@ import './App.css'
 
 const API = ''
 
+/** Chuyển đường dẫn local (Windows) thành URL tĩnh /static/evidence/... */
+const toEvidenceUrl = (p) => {
+  if (!p) return null
+  const normalized = p.replace(/\\/g, '/')
+  const idx = normalized.indexOf('evidence/')
+  return idx >= 0 ? `/static/${normalized.slice(idx)}` : null
+}
+
 export default function App() {
   const [sessionId, setSessionId] = useState(null)
   const [status, setStatus] = useState('idle')
@@ -84,8 +92,13 @@ export default function App() {
         const blob = new Blob([new Uint8Array(msg.data)], { type: 'image/jpeg' })
         setCalibImg(URL.createObjectURL(blob))
       } else if (msg.type === 'violation') {
-        setViolations((prev) => [msg.data, ...prev].slice(0, 100))
         const d = msg.data
+        const enriched = {
+          ...d,
+          evidenceUrl: toEvidenceUrl(d.evidence),
+          cropUrl: null,  // cropUrl sẽ cập nhật qua plate_update
+        }
+        setViolations((prev) => [enriched, ...prev].slice(0, 100))
         const ts = new Date().toLocaleTimeString('vi-VN')
         const entry = {
           ts, type: 'violation',
@@ -105,11 +118,13 @@ export default function App() {
         setLogs([...logsRef.current])
         setProgress({ pct: 1, msg: `Xong! ${s.redlight_count} vượt đèn đỏ · ${s.helmet_count} không mũ` })
       } else if (msg.type === 'plate_update') {
-        // Cập nhật biển số muộn vào vi phạm đã có
         const { track_id, plate, time, bbox, crop_path } = msg.data
+        const cropUrl = toEvidenceUrl(crop_path)
         setViolations((prev) =>
           prev.map((v) =>
-            v.track_id === track_id && !v.plate ? { ...v, plate } : v
+            v.track_id === track_id && !v.plate
+              ? { ...v, plate, cropUrl: cropUrl || v.cropUrl }
+              : v
           )
         )
         const ts = new Date().toLocaleTimeString('vi-VN')
@@ -165,13 +180,13 @@ export default function App() {
   }, [])
 
   return (
-    <div className="app-layout">
+    <div className="flex flex-col h-screen overflow-hidden bg-slate-50">
       <Header status={status} />
-      <div className="main-grid">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         <UploadPanel onStart={handleStart} onStop={handleStop} status={status} />
-        <div className="center-col">
-          <VideoStream canvasRef={canvasRef} status={status} calibImg={calibImg} logs={logs} />
+        <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
           <ProgressBar progress={progress} />
+          <VideoStream canvasRef={canvasRef} status={status} calibImg={calibImg} logs={logs} />
           <StatsBar stats={stats} />
         </div>
         <ViolationPanel violations={violations} />

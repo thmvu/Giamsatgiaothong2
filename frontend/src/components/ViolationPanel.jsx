@@ -1,87 +1,136 @@
+import { useState } from 'react'
+import ImageModal from './ImageModal'
+
 export default function ViolationPanel({ violations }) {
-  return (
-    <div style={{
-      background: 'var(--surface)', borderLeft: '1px solid var(--border)',
-      display: 'flex', flexDirection: 'column', overflow: 'hidden',
-    }}>
-      <div style={{ padding: '12px 14px 8px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6 }}>
-        {violations.length > 0 && (
-          <span style={{
-            display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-            background: 'var(--red)', animation: 'pulse 1s infinite',
-          }} />
-        )}
-        <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--muted)', fontWeight: 600 }}>
-          Vi phạm
-        </span>
-        <span style={{
-          marginLeft: 'auto', background: violations.length > 0 ? 'rgba(255,68,68,.15)' : 'var(--card)',
-          color: violations.length > 0 ? 'var(--red)' : 'var(--muted)',
-          fontSize: 11, padding: '1px 7px', borderRadius: 20, fontWeight: 600,
-        }}>{violations.length}</span>
-      </div>
+  const [modal, setModal] = useState(null) // { src, alt }
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '8px 10px' }}>
-        {violations.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--muted)', fontSize: 13 }}>
-            <div style={{ fontSize: 36, marginBottom: 8 }}>🛡️</div>
-            Chưa phát hiện vi phạm
-          </div>
-        ) : violations.map((v, i) => (
-          <VioCard key={`${v.track_id}-${v.frame}-${i}`} v={v} />
-        ))}
-      </div>
-    </div>
+  return (
+    <>
+      <aside className="w-72 flex-shrink-0 flex flex-col bg-white border-l border-slate-200 overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 flex-shrink-0">
+          {violations.length > 0 && (
+            <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse-dot" />
+          )}
+          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+            Vi phạm
+          </span>
+          <span className={`ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full
+            ${violations.length > 0
+              ? 'bg-rose-50 text-rose-600 border border-rose-200'
+              : 'bg-slate-100 text-slate-400'}`}>
+            {violations.length}
+          </span>
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto scrollbar-thin px-3 py-2 space-y-2">
+          {violations.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 py-10 text-slate-400 select-none">
+              <span className="text-4xl">🛡️</span>
+              <p className="text-xs">Chưa phát hiện vi phạm</p>
+            </div>
+          ) : violations.map((v, i) => (
+            <VioCard key={`${v.track_id}-${v.frame}-${i}`} v={v} onOpenImage={setModal} />
+          ))}
+        </div>
+      </aside>
+
+      {/* Modal */}
+      {modal && <ImageModal src={modal.src} alt={modal.alt} onClose={() => setModal(null)} />}
+    </>
   )
 }
 
-function VioCard({ v }) {
+function VioCard({ v, onOpenImage }) {
   const isHelmet = v.type === 'Không đội mũ'
-  const borderColor = isHelmet ? 'var(--yellow)' : 'var(--red)'
-  const typeColor   = isHelmet ? 'var(--yellow)' : 'var(--red)'
-  const icon        = isHelmet ? '🪖' : '🔴'
-  return (
-    <div style={{
-      background: 'var(--card)', border: `1px solid var(--border)`,
-      borderLeft: `3px solid ${borderColor}`,
-      borderRadius: 8, padding: 10, marginBottom: 8,
-      animation: 'slideIn .3s ease',
-    }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: typeColor }}>{icon} {v.type}</div>
-      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>
-        {v.vehicle} · ID{v.track_id} · {v.time}s
-      </div>
+  const typeStyle = isHelmet
+    ? { badge: 'bg-amber-50 text-amber-700 border-amber-200', bar: 'bg-amber-400', icon: '🪖' }
+    : { badge: 'bg-rose-50 text-rose-700 border-rose-200',   bar: 'bg-rose-400',   icon: '🔴' }
 
-      {/* Biển số xe — hiển thị nổi bật */}
-      {v.plate ? (
-        <div style={{
-          marginTop: 6,
-          display: 'inline-flex', alignItems: 'center', gap: 5,
-          background: 'rgba(14,165,233,.15)',
-          border: '1px solid rgba(14,165,233,.4)',
-          borderRadius: 6, padding: '3px 8px',
-        }}>
-          <span style={{ fontSize: 10, color: 'var(--accent)', fontWeight: 600 }}>BSX</span>
-          <span style={{
-            fontSize: 13, fontWeight: 800, color: '#fff',
-            letterSpacing: 2, fontFamily: '"Courier New", monospace',
-          }}>{v.plate}</span>
+  return (
+    <div className="animate-slide-up bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow">
+      {/* Thanh màu phân biệt loại vi phạm */}
+      <div className={`h-1 w-full ${typeStyle.bar}`} />
+
+      <div className="p-3">
+        {/* Type & meta */}
+        <div className="flex items-start justify-between gap-2 mb-2">
+          <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${typeStyle.badge}`}>
+            {typeStyle.icon} {v.type}
+          </span>
+          <span className="text-[10px] text-slate-400 whitespace-nowrap">{v.time}s</span>
         </div>
-      ) : (
-        <div style={{
-          marginTop: 6,
-          display: 'inline-flex', alignItems: 'center', gap: 5,
-          background: 'rgba(148,163,184,.08)',
-          border: '1px dashed rgba(148,163,184,.25)',
-          borderRadius: 6, padding: '3px 8px',
-        }}>
-          <span style={{ fontSize: 10, color: 'var(--muted)' }}>BSX</span>
-          <span style={{
-            fontSize: 11, color: 'var(--muted)', fontStyle: 'italic',
-          }}>Đang nhận dạng...</span>
+
+        <p className="text-[11px] text-slate-500 mb-2">
+          {v.vehicle} · ID {v.track_id}
+        </p>
+
+        {/* Biển số xe */}
+        <div className="mb-2.5">
+          {v.plate ? (
+            <div className="inline-flex items-center gap-2 bg-yellow-50 border-2 border-yellow-400
+                            rounded-lg px-2.5 py-1">
+              <span className="text-[9px] font-bold text-yellow-700 uppercase tracking-widest">BSX</span>
+              <span className="text-sm font-black text-slate-800 tracking-[0.2em] font-mono">
+                {v.plate}
+              </span>
+            </div>
+          ) : (
+            <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200
+                            rounded-lg px-2.5 py-1 text-[11px] text-slate-400">
+              <span className="animate-pulse-dot">●</span>
+              Đang nhận dạng biển số...
+            </div>
+          )}
         </div>
-      )}
+
+        {/* Ảnh bằng chứng */}
+        {(v.evidenceUrl || v.cropUrl) && (
+          <div className="flex gap-2">
+            {v.evidenceUrl && (
+              <button
+                onClick={() => onOpenImage({ src: v.evidenceUrl, alt: `Bằng chứng vi phạm ID${v.track_id}` })}
+                className="flex-1 group relative rounded-lg overflow-hidden border border-slate-200 hover:border-sky-400 transition-colors cursor-zoom-in"
+                title="Xem ảnh bằng chứng"
+              >
+                <img
+                  src={v.evidenceUrl}
+                  alt="Bằng chứng vi phạm"
+                  className="w-full h-16 object-cover"
+                  onError={e => { e.target.style.display = 'none' }}
+                />
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                  <span className="opacity-0 group-hover:opacity-100 text-white text-lg transition-opacity drop-shadow">🔍</span>
+                </div>
+                <span className="absolute bottom-0 inset-x-0 bg-black/40 text-[9px] text-white text-center py-0.5">
+                  Vi phạm
+                </span>
+              </button>
+            )}
+            {v.cropUrl && (
+              <button
+                onClick={() => onOpenImage({ src: v.cropUrl, alt: `Biển số ID${v.track_id}` })}
+                className="flex-1 group relative rounded-lg overflow-hidden border border-slate-200 hover:border-sky-400 transition-colors cursor-zoom-in"
+                title="Xem ảnh biển số"
+              >
+                <img
+                  src={v.cropUrl}
+                  alt="Ảnh cắt biển số"
+                  className="w-full h-16 object-cover"
+                  onError={e => { e.target.style.display = 'none' }}
+                />
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                  <span className="opacity-0 group-hover:opacity-100 text-white text-lg transition-opacity drop-shadow">🔍</span>
+                </div>
+                <span className="absolute bottom-0 inset-x-0 bg-black/40 text-[9px] text-white text-center py-0.5">
+                  Biển số
+                </span>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
-

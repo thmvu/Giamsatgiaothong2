@@ -12,11 +12,17 @@ from typing import Dict, Any
 from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.processor import VideoProcessor, ProcessorConfig
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 app = FastAPI(title="AI Traffic Monitor", version="2.0")
+
+# Serve ảnh bằng chứng tĩnh — tạo thư mục trước để tránh lỗi khi chưa có file nào
+os.makedirs("evidence", exist_ok=True)
+os.makedirs(os.path.join("evidence", "plates"), exist_ok=True)
+app.mount("/static/evidence", StaticFiles(directory="evidence"), name="evidence")
 executor = ThreadPoolExecutor(max_workers=2)
 
 # CORS: cho phép React (port 3000) gọi FastAPI (port 8000) trong dev mode

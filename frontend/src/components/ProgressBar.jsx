@@ -1,16 +1,21 @@
 export default function ProgressBar({ progress }) {
+  const pct = Math.round((progress.pct || 0) * 100)
   return (
-    <div style={{ padding: '8px 16px', background: 'var(--surface)', borderTop: '1px solid var(--border)' }}>
-      <div style={{ background: 'var(--border)', borderRadius: 4, height: 6, overflow: 'hidden' }}>
-        <div style={{
-          height: '100%',
-          background: 'linear-gradient(90deg,var(--accent),var(--accent2))',
-          borderRadius: 4,
-          width: `${Math.round(progress.pct * 100)}%`,
-          transition: 'width .3s',
-        }} />
+    <div className="px-4 py-2 bg-white border-b border-slate-200 flex items-center gap-3">
+      <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+        <div
+          className="h-full bg-sky-500 rounded-full transition-all duration-300"
+          style={{ width: `${pct}%` }}
+        />
       </div>
-      <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{progress.msg}</p>
+      <span className="flex-shrink-0 text-[11px] text-slate-500 min-w-[3rem] text-right font-medium">
+        {pct}%
+      </span>
+      {progress.msg && (
+        <span className="hidden sm:block text-[11px] text-slate-400 truncate max-w-[260px]">
+          {progress.msg}
+        </span>
+      )}
     </div>
   )
 }
