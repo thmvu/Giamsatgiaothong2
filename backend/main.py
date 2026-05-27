@@ -75,7 +75,8 @@ async def upload_video(
     show_all: bool = Form(True),
 ):
     # Lưu video vào temp file
-    suffix = os.path.splitext(file.filename)[-1] or ".mp4"
+    filename = file.filename or ""
+    suffix = os.path.splitext(filename)[-1] or ".mp4"
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     content = await file.read()
     tmp.write(content)

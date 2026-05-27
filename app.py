@@ -132,14 +132,14 @@ if check_plate_enabled:
     lp_model_path = st.sidebar.selectbox(
         "🧠 Model biển số",
         options=[
-            "models/license_plate_detector.pt",
             "models/biensoxe.onnx",
+            "models/license_plate_detector.pt",
             "models/best.onnx",
         ],
         index=0,
         help="Chọn model YOLO phát hiện biển số.\n"
-             "license_plate_detector.pt: nhẹ (6MB), nhanh\n"
-             "biensoxe.onnx / best.onnx: nặng hơn (80MB), chính xác hơn, dùng với imgsz=1024"
+             "biensoxe.onnx / best.onnx: nặng hơn (80MB), chính xác hơn, dùng với imgsz=1024\n"
+             "license_plate_detector.pt: nhẹ (6MB), nhanh"
     )
     lp_imgsz = st.sidebar.select_slider(
         "🔍 LP YOLO imgsz", options=[320, 640, 1024], value=640,
@@ -151,7 +151,7 @@ if check_plate_enabled:
 else:
     conf_lp  = 0.20
     conf_ocr = 0.50
-    lp_model_path = "models/license_plate_detector.pt"
+    lp_model_path = "models/biensoxe.onnx"
     lp_imgsz = 640
 
 st.sidebar.markdown("---")
@@ -190,8 +190,8 @@ def load_plate_models_v3(model_path: str, imgsz: int):
     """
     import os
     if not os.path.exists(model_path):
-        st.warning(f"⚠️ Không tìm thấy {model_path} — fallback license_plate_detector.pt")
-        model_path = "models/license_plate_detector.pt"
+        st.warning(f"⚠️ Không tìm thấy {model_path} — fallback biensoxe.onnx")
+        model_path = "models/biensoxe.onnx"
     lp_det = LicensePlateDetector(model_path, conf=0.10, device=DEVICE, imgsz=imgsz)
     lp_ocr = PlateReader(use_gpu=False)
     return lp_det, lp_ocr
@@ -375,7 +375,7 @@ def check_red_light_hsv(frame, bbox):
     
     mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
     mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    mask = mask1 + mask2
+    mask = cv2.bitwise_or(mask1, mask2)
     
     red_pixels = cv2.countNonZero(mask)
     total_pixels = mask.shape[0] * mask.shape[1]
@@ -474,6 +474,7 @@ if uploaded_file is not None:
 
         # === Thử tối đa MAX_CALIB_FRAMES frame đầu tiên ===
         MAX_CALIB_FRAMES = 5
+        stop_y = 0  # mặc định 0, sẽ được gán khi tìm thấy vạch
         calib_frames = [first_frame]
 
         for _ in range(MAX_CALIB_FRAMES - 1):
@@ -657,6 +658,7 @@ if uploaded_file is not None:
                             if crop.size > 0 and min(crop.shape[:2]) > 15:
                                 h_res = helmet_model.predict(crop, conf=conf_helmet, imgsz=320, verbose=False)
                                 for hr in h_res:
+                                    if hr.boxes is None: continue
                                     # Debug: in tên các class model detect được (chỉ in 1 lần đầu)
                                     if frame_count <= 30 and processed_count <= 5:
                                         detected_cls = [f"{hr.names[int(b.cls[0])]}({float(b.conf[0]):.2f})" for b in hr.boxes]

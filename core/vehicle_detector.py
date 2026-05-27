@@ -98,10 +98,16 @@ class VehicleDetector:
             if res.boxes is None or len(res.boxes) == 0:
                 continue
 
-            boxes = res.boxes.xyxy.int().cpu().tolist()
-            clss = res.boxes.cls.int().cpu().tolist()
-            confs = res.boxes.conf.cpu().tolist()
-            ids = res.boxes.id.int().cpu().tolist() if res.boxes.id is not None else [None] * len(boxes)
+            from typing import Any
+            boxes_any: Any = res.boxes.xyxy
+            cls_any: Any = res.boxes.cls
+            conf_any: Any = res.boxes.conf
+            id_any: Any = res.boxes.id
+
+            boxes = boxes_any.int().cpu().tolist()
+            clss = cls_any.int().cpu().tolist()
+            confs = conf_any.cpu().tolist()
+            ids = id_any.int().cpu().tolist() if id_any is not None else [None] * len(boxes)
 
             for i in range(len(boxes)):
                 obj = DetectedObject(

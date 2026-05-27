@@ -28,6 +28,7 @@ os.environ.setdefault("YOLO_AUTOINSTALL", "False")
 import cv2
 import numpy as np
 import re
+from typing import Optional, Any
 from ultralytics import YOLO
 
 try:
@@ -35,12 +36,14 @@ try:
     from rapidocr_onnxruntime import RapidOCR
     RAPIDOCR_AVAILABLE = True
 except ImportError:
+    RapidOCR = None  # type: ignore[assignment]
     RAPIDOCR_AVAILABLE = False
 
 try:
     import easyocr
     EASYOCR_AVAILABLE = True
 except ImportError:
+    easyocr = None  # type: ignore[assignment]
     EASYOCR_AVAILABLE = False
 
 
@@ -160,9 +163,10 @@ class PlateReader:
         self._retry_count: dict = {}  # track_id -> số lần OCR thất bại
         self._MAX_RETRIES = 15        # sau 15 lần thất bại mới dừng thử
         self._engine = "none"
+        self._ocr: Any = None         # RapidOCR | easyocr.Reader | None
 
         # ── Thử RapidOCR trước (model PaddleOCR + ONNX) ──
-        if RAPIDOCR_AVAILABLE:
+        if RAPIDOCR_AVAILABLE and RapidOCR is not None:
             # Thử bật GPU trước (cần onnxruntime-gpu)
             if use_gpu:
                 try:
@@ -182,7 +186,7 @@ class PlateReader:
                 print(f"[WARNING] RapidOCR init thất bại: {e} → thử EasyOCR")
 
         # ── Fallback: EasyOCR ──
-        if EASYOCR_AVAILABLE:
+        if EASYOCR_AVAILABLE and easyocr is not None:
             try:
                 self._ocr = easyocr.Reader(['en'], gpu=use_gpu)
                 self._engine = "easyocr"
@@ -203,7 +207,7 @@ class PlateReader:
     def engine(self) -> str:
         return self._engine
 
-    def read_plate(self, plate_crop: np.ndarray, track_id: int = None, min_score: float = 0.5) -> str:
+    def read_plate(self, plate_crop: np.ndarray, track_id: Optional[int] = None, min_score: float = 0.5) -> str:
         """
         Đọc text biển số từ ảnh crop biển số.
 
@@ -271,7 +275,7 @@ class PlateReader:
                 if len(cleaned) >= 2 and score > min_score:
                     # Lấy tọa độ Y trung bình của bbox → sort dòng trên trước
                     try:
-                        y_center = float(np.mean([pt[1] for pt in bbox_pts]))
+                        y_center = float(np.mean([float(pt[1]) for pt in bbox_pts]))
                     except Exception:
                         y_center = 0.0
                     texts.append((cleaned, score, y_center))

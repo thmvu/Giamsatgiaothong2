@@ -10,7 +10,7 @@ import os
 import asyncio
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from dotenv import load_dotenv
 
 # Nạp các biến môi trường từ file .env
@@ -74,6 +74,9 @@ def init_db():
 
 async def _ping_db():
     global MONGO_ENABLED, db_client
+    if db_client is None:
+        MONGO_ENABLED = False
+        return
     try:
         # Ping thử db_client để kích hoạt kết nối thực sự
         await db_client.admin.command('ping')
@@ -130,7 +133,7 @@ async def save_violation(vio_data: Dict[str, Any]) -> str:
     return violation_id
 
 
-async def update_violation_plate(track_id: int, plate_text: str, crop_path: str = None, bbox: list = None) -> bool:
+async def update_violation_plate(track_id: int, plate_text: str, crop_path: Optional[str] = None, bbox: Optional[list] = None) -> bool:
     """
     Cập nhật biển số xe giải mã muộn (Late Update) cho các vi phạm của cùng một phương tiện.
     
@@ -143,7 +146,7 @@ async def update_violation_plate(track_id: int, plate_text: str, crop_path: str 
     if not track_id or not plate_text:
         return False
         
-    update_fields = {"license_plate": plate_text}
+    update_fields: Dict[str, Any] = {"license_plate": plate_text}
     if crop_path:
         update_fields["plate_crop"] = crop_path
     if bbox:

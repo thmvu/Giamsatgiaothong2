@@ -9,7 +9,7 @@ os.environ.setdefault("YOLO_AUTOINSTALL", "False")
 
 import cv2, gc, sys, numpy as np, torch
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 
 # Thêm thư mục gốc vào sys.path để import utils/, core/
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -113,8 +113,9 @@ class VideoProcessor:
         if crop.size == 0:
             return False
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        m = cv2.inRange(hsv, np.array([0, 100, 100]), np.array([10, 255, 255])) + \
-            cv2.inRange(hsv, np.array([160, 100, 100]), np.array([180, 255, 255]))
+        mask1 = cv2.inRange(hsv, np.array([0, 100, 100]), np.array([10, 255, 255]))
+        mask2 = cv2.inRange(hsv, np.array([160, 100, 100]), np.array([180, 255, 255]))
+        m = cv2.bitwise_or(mask1, mask2)
         return cv2.countNonZero(m) / max(crop.shape[0] * crop.shape[1], 1) > 0.05
 
     # ── Calibration ───────────────────────────────────────────────────────────
@@ -348,9 +349,12 @@ class VideoProcessor:
         prog(0.3, "🚦 Tìm đèn giao thông...")
         light_bbox_c = None
         for r in self.light_model(first, conf=0.3, verbose=False):
-            if r.boxes is not None and len(r.boxes) > 0:
-                bc = max(range(len(r.boxes)), key=lambda i: float(r.boxes.conf[i]))
-                light_bbox_c = r.boxes.xyxy[bc].tolist()
+            boxes = r.boxes
+            if boxes is not None and len(boxes) > 0:
+                b_any: Any = boxes
+                if b_any.conf is not None:
+                    bc = int(np.argmax(b_any.conf.cpu().numpy()))
+                    light_bbox_c = b_any.xyxy[bc].tolist()
 
         prog(0.5, "🎯 Load SAM2...")
         stop_line_model_path = cfg.stop_line_model_path
@@ -434,10 +438,19 @@ class VideoProcessor:
             cur_ids = set()
             for r in veh_res:
                 if r.boxes is None or len(r.boxes) == 0: continue
-                # Chuyển đổi toàn bộ tensor sang danh sách CPU một lần duy nhất để tối ưu hiệu năng tối đa (không nghẽn CUDA sync)
-                boxes_list = r.boxes.xyxy.int().cpu().tolist()
-                clss_list = r.boxes.cls.int().cpu().tolist()
-                ids_list = r.boxes.id.int().cpu().tolist() if r.boxes.id is not None else [None] * len(boxes_list)
+                # Chuyển đổi toàn bộ tensor sang danh sách một cách an toàn (hỗ trợ cả PyTorch Tensor và NumPy ndarray)
+                def to_int_list(x) -> Any:
+                    if x is None:
+                        return []
+                    if hasattr(x, "cpu"):  # PyTorch Tensor
+                        return x.cpu().int().tolist()
+                    if hasattr(x, "astype"):  # NumPy ndarray
+                        return x.astype(int).tolist()
+                    return [int(val) for val in x]
+
+                boxes_list = to_int_list(r.boxes.xyxy)
+                clss_list = to_int_list(r.boxes.cls)
+                ids_list = to_int_list(r.boxes.id) if r.boxes.id is not None else [None] * len(boxes_list)
 
                 for i in range(len(boxes_list)):
                     bbox = boxes_list[i]
@@ -467,6 +480,7 @@ class VideoProcessor:
                             crop = frame[y1:y2, x1:x2]
                             if crop.size > 0 and min(crop.shape[:2]) > 15:
                                 for hr in self.helmet_model.predict(crop, conf=cfg.conf_helmet, imgsz=320, verbose=False):
+                                    if hr.boxes is None: continue
                                     for b in hr.boxes:
                                         lbl = hr.names[int(b.cls[0])].lower()
                                         if lbl in ('without helmet','without_helmet','no_helmet','nohelmet','no helmet'):

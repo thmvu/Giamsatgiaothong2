@@ -1,7 +1,7 @@
 """
 Script kiem tra ket noi MongoDB Atlas Cloud nhanh
 ==================================================
-Chay: .\venv_paddle\Scripts\python.exe backend/test_db.py
+Chay: ./venv_paddle/Scripts/python.exe backend/test_db.py
 """
 
 import os

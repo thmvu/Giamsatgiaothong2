@@ -47,6 +47,8 @@ class ViolationState:
     def add_helmet_violation(self, obj: DetectedObject, frame_number: int,
                               fps: float, evidence_dir: str, frame=None):
         """Ghi nhận vi phạm mũ bảo hiểm."""
+        if obj.track_id is None:
+            return
         self.helmet_violated_ids.add(obj.track_id)
 
         ev_path = ""
